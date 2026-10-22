@@ -452,13 +452,20 @@ async def test_bot_start_s_referalnoy_ssylkoy_i_kategoriya():
     await dp.feed_update(bot, _upd(7111, f"/start ref_{code}", 1))
     assert _user(7111)["referred_by"] == a["id"]
     sent = [m for m in session.calls if isinstance(m, SendMessage)]
-    assert [b.callback_data for b in _buttons(sent[1].reply_markup)] == ["cat:seller", "cat:fulfillment"]
+    assert [b.callback_data for b in _buttons(sent[0].reply_markup)] == ["cat:seller", "cat:fulfillment"]
     await dp.feed_update(bot, _cb(7111, "cat:fulfillment", 2, 900))
     assert _user(7111)["category"] == "fulfillment"
-    last = [m for m in session.calls if isinstance(m, SendMessage)][-1]
-    assert "Готово: Фулфилмент" in last.text
+    from aiogram.methods import AnswerCallbackQuery, EditMessageText
+
+    assert [m for m in session.calls if isinstance(m, AnswerCallbackQuery)][-1].text == "Готово: Фулфилмент"
+    home = [m for m in session.calls if isinstance(m, EditMessageText)][-1]
+    assert "Фулфилмент" in home.text
+    await dp.feed_update(bot, _cb(7111, "m:bal", 3, 900))
+    last = [m for m in session.calls if isinstance(m, EditMessageText)][-1]
     assert any("/l/" in b.url and "next=/cabinet" in b.url for b in _buttons(last.reply_markup) if b.url)
+    await dp.feed_update(bot, _cb(7111, "cat:seller", 4, 900))  # повторный выбор не меняет категорию
+    assert _user(7111)["category"] == "fulfillment"
     await dp.feed_update(bot, _upd(7111, "/info", 3))
     last = [m for m in session.calls if isinstance(m, SendMessage)][-1]
-    urls = [b.url for b in _buttons(last.reply_markup)]
+    urls = [b.url for b in _buttons(last.reply_markup) if b.url]
     assert [u.rsplit("/", 1)[1] for u in urls] == ["tariffs", "terms", "privacy", "support"]

@@ -21,7 +21,7 @@ def test_page_boundaries():
     total = len(INSTRUKCIYA_STEPS)
     text, kb = instrukciya_page(0)
     assert text.startswith(f"Шаг 1 из {total}")
-    assert [b.text for b in _buttons(kb)] == ["Дальше"]
+    assert [b.text for b in _buttons(kb)] == ["Дальше", "🏠 Меню"]
     text, kb = instrukciya_page(total - 1)
     assert text.startswith(f"Шаг {total} из {total}")
     labels = [b.text for b in _buttons(kb)]

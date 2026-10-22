@@ -212,3 +212,11 @@ tr.new-row td { background: var(--soft-2); }
 .doc h2::before { height: 18px; }
 .doc p, .doc li { line-height: 1.6; }
 .foot-in { gap: 10px 24px; }
+
+/* Шапка на телефоне: кнопки переносятся, а не уезжают за край экрана */
+@media (max-width: 600px) {
+  .topbar-in { padding: 10px 12px; gap: 10px; }
+  .topbar .topnav { flex-wrap: wrap; width: 100%; gap: 6px; }
+  .topbar .topnav a { min-height: 38px; padding: 0 12px; font-size: 14px; }
+  .topbar .topnav a.bal { margin-left: auto; }
+}

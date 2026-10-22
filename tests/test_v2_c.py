@@ -15,7 +15,7 @@ client = TestClient(create_app())
 def _bot_texts() -> str:
     parts = [b for _, b in bot_main.INSTRUKCIYA_STEPS]
     parts.append(screens.api_new_screen()[1])
-    parts += [c for _, c, _ in screens.files_screens()]
+    parts += [c for _, c in screens.files_screens()]
     parts.append(bot_main.HINT_TEXT)
     return "\n".join(parts)
 

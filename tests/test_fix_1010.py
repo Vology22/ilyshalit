@@ -189,7 +189,7 @@ def test_instrukciya_bota_pro_fias_bez_prosby_vvesti():
 
 def test_pyas_klikov_i_placeholder_fias():
     from chzkiz.bot import screens
-    assert "Осталась пара кликов" in screens.go_screen("http://x")[0]
+    assert "Ссылка разовая и работает 15 минут" in screens.link_screen("http://x")[0]
     page = (PKG / "web" / "templates" / "step4.html").read_text(encoding="utf-8")
     assert 'placeholder="36 знаков, например 0c5b2444-70a0-..."' in page
     assert "В документе цена из отчета, дата вывода сегодняшняя." in page

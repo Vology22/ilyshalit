@@ -9,7 +9,7 @@ OLD = ("Маркетплейс → Сборочные задания", "меся
 
 
 def _captions():
-    return [cap for _, cap, _ in screens.files_screens()]
+    return [cap for _, cap in screens.files_screens()]
 
 
 def test_files_path_new():

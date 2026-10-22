@@ -1,4 +1,6 @@
-"""Бот только вход и уведомления, вся работа на веб-странице (см. PLAN.md)."""
+"""Бот: вход в панель, токен WB, баланс, рефералы и помощь. Вся работа со сверкой на веб-странице.
+
+Навигация одним сообщением: нажатие кнопки меню редактирует текущий экран."""
 from __future__ import annotations
 
 import asyncio
@@ -7,12 +9,15 @@ import re
 
 import httpx
 from aiogram import Bot, Dispatcher, F
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
-    BotCommand, CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message,
+    BotCommand, CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Message,
 )
 
 from .. import billing, config, crypto, db, wb_api
@@ -22,15 +27,15 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("chzkiz.bot")
 
 COMMANDS = [
-    ("start", "начать, подключить WB по API"),
+    ("start", "главное меню"),
     ("out", "сделать сверку КИЗ"),
-    ("cabinet", "баланс, тарифы и рефералы"),
-    ("info", "тарифы, документы, поддержка"),
+    ("cabinet", "баланс и тарифы"),
+    ("info", "помощь, тарифы, документы"),
     ("instrukciya", "пошаговая инструкция"),
     ("help", "что умеет бот"),
 ]
 
-HINT_TEXT = "Не понял. /out - сделать сверку, /instrukciya - инструкция, /start - подключить токен WB."
+HINT_TEXT = "Не понял. Откройте меню кнопкой ниже или командой /start."
 _JWT_CHARS_RE = re.compile(r"[A-Za-z0-9_.-]+")
 
 
@@ -44,7 +49,7 @@ INSTRUKCIYA_STEPS = [
     ),
     (
         "Токен WB API",
-        "В боте наберите /start и нажмите Подключить WB по API.\n"
+        "В боте наберите /start и нажмите Токен WB.\n"
         f"Токен создайте в кабинете WB: {screens.TOKEN_PATH}.\n"
         f"{screens.TOKEN_SAFE}\n"
         "Пришлите токен боту, сообщение с ним бот сразу удалит.\n"
@@ -52,7 +57,7 @@ INSTRUKCIYA_STEPS = [
     ),
     (
         "Ссылка на панель",
-        "Наберите /out и нажмите Сделать сверку, бот пришлет кнопку со ссылкой.\n"
+        "Наберите /out и нажмите Открыть панель сверки, бот пришлет кнопку со ссылкой.\n"
         "Ссылка одноразовая и живет 15 минут.\n"
         "После входа панель держит вас 30 дней.",
     ),
@@ -94,7 +99,7 @@ def instrukciya_page(i: int) -> tuple[str, InlineKeyboardMarkup]:
     last = len(INSTRUKCIYA_STEPS) - 1
     i = max(0, min(i, last))
     title, body = INSTRUKCIYA_STEPS[i]
-    text = f"Шаг {i + 1} из {len(INSTRUKCIYA_STEPS)}. {title}\n\n{body}"
+    text = f"Шаг {i + 1} из {len(INSTRUKCIYA_STEPS)}. <b>{title}</b>\n\n{body}"
     nav = []
     if i > 0:
         nav.append(InlineKeyboardButton(text="Назад", callback_data=f"ins:{i - 1}"))
@@ -103,8 +108,9 @@ def instrukciya_page(i: int) -> tuple[str, InlineKeyboardMarkup]:
     rows = [nav]
     if i == last:
         rows.append(
-            [InlineKeyboardButton(text="Полная инструкция с видео", url=f"{config.PUBLIC_URL}/instrukciya")]
+            [InlineKeyboardButton(text="📖 Полная инструкция с видео", url=f"{config.PUBLIC_URL}/instrukciya")]
         )
+    rows.append([InlineKeyboardButton(text="🏠 Меню", callback_data=screens.HOME)])
     return text, InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -120,23 +126,84 @@ def _login_link(tg_id: int, next_page: str = "") -> str:
     return f"{config.PUBLIC_URL}/l/{token}{tail}"
 
 
-def _cabinet(tg_id: int) -> tuple[str, InlineKeyboardMarkup]:
+def _user(tg_id: int):
+    with db.connect() as conn:
+        return db.get_or_create_user(conn, tg_id)
+
+
+def _home(tg_id: int) -> tuple[str, InlineKeyboardMarkup]:
+    u = _user(tg_id)
+    return screens.home_screen(u["balance"], bool(u["wb_key_enc"]), u["category"])
+
+
+def _sverka(tg_id: int) -> tuple[str, InlineKeyboardMarkup]:
+    u = _user(tg_id)
+    return screens.sverka_screen(bool(u["wb_key_enc"]), u["balance"])
+
+
+def _balance(tg_id: int) -> tuple[str, InlineKeyboardMarkup]:
     link = _login_link(tg_id, "/cabinet")
     with db.connect() as conn:
-        user = db.get_or_create_user(conn, tg_id)
-    return screens.cabinet_screen(link, user["balance"])
+        u = db.get_or_create_user(conn, tg_id)
+        tariffs = [dict(t) for t in billing.tariffs(conn)]
+    return screens.balance_screen(u["balance"], tariffs, link)
 
 
-def _has_wb_key(tg_id: int) -> bool:
+def _ref(tg_id: int) -> tuple[str, InlineKeyboardMarkup]:
     with db.connect() as conn:
-        user = db.get_or_create_user(conn, tg_id)
-        return bool(user["wb_key_enc"])
+        u = db.get_or_create_user(conn, tg_id)
+        code = billing.ensure_ref_code(conn, u["id"])
+        stats = billing.ref_stats(conn, u["id"])
+    return screens.ref_screen(u["category"], billing.ref_link(code), stats)
 
 
-async def _send_api_new(msg: Message, state: FSMContext) -> None:
+def _menu_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🏠 Меню", callback_data=screens.HOME)]])
+
+
+async def _show(target: Message | CallbackQuery, text: str, kb: InlineKeyboardMarkup) -> None:
+    """Экран на месте текущего сообщения бота; команда или фото - новым сообщением."""
+    if isinstance(target, CallbackQuery):
+        msg = target.message
+        if msg is None:
+            return
+        if msg.text is not None:
+            try:
+                await msg.edit_text(text, reply_markup=kb)
+                return
+            except TelegramBadRequest as e:
+                if "not modified" in str(e):
+                    return
+        else:
+            # экран был фото (инструкция) - текст в подпись не влезет, заменяем сообщение
+            try:
+                await msg.delete()
+            except TelegramBadRequest:
+                pass
+        await msg.answer(text, reply_markup=kb)
+        return
+    await target.answer(text, reply_markup=kb)
+
+
+async def _send_api_new(target: Message | CallbackQuery, state: FSMContext) -> None:
     photo, caption, kb = screens.api_new_screen()
     await state.set_state(WaitKey.key)
+    msg = target.message if isinstance(target, CallbackQuery) else target
+    if msg is None:
+        return
+    if isinstance(target, CallbackQuery):
+        try:
+            await msg.delete()  # меню уступает место инструкции, чат не копит старые экраны
+        except TelegramBadRequest:
+            pass
     await msg.answer_photo(FSInputFile(photo), caption=caption, reply_markup=kb)
+
+
+async def _send_files(msg: Message) -> None:
+    media = [InputMediaPhoto(media=FSInputFile(p), caption=c) for p, c in screens.files_screens()]
+    await msg.answer_media_group(media)
+    text, kb = screens.files_done_screen()
+    await msg.answer(text, reply_markup=kb)
 
 
 def build_dispatcher() -> Dispatcher:
@@ -150,41 +217,25 @@ def build_dispatcher() -> Dispatcher:
         ref_code = payload[4:] if payload.startswith("ref_") else ""
         with db.connect() as conn:
             user = db.get_or_create_user(conn, message.from_user.id, ref_code)
-        text, kb = screens.start_screen()
-        await message.answer(text, reply_markup=kb)
         if not user["category"]:
-            text, kb = screens.category_screen()
-            await message.answer(text, reply_markup=kb)
+            text, kb = screens.welcome_screen(message.from_user.first_name or "")
+        else:
+            text, kb = _home(message.from_user.id)
+        await message.answer(text, reply_markup=kb)
 
     @dp.callback_query(F.data.startswith("cat:"))
     async def on_category(query: CallbackQuery) -> None:
-        await query.answer()
         category = query.data.split(":", 1)[1]
         with db.connect() as conn:
             user = db.get_or_create_user(conn, query.from_user.id)
             changed = billing.set_category(conn, user["id"], category)
             user = db.get_user(conn, user["id"])
-        if query.message is None:
-            return
         label = config.CATEGORIES.get(user["category"], "")
         if changed:
-            head = f"Готово: {label}."
+            await query.answer(f"Готово: {label}")
         else:
-            head = f"Категория уже выбрана: {label}. Сменить ее можно через поддержку."
-        text, kb = _cabinet(query.from_user.id)
-        await query.message.answer(f"{head}\n\n{text}", reply_markup=kb)
-
-    @dp.message(Command("info"))
-    async def on_info(message: Message, state: FSMContext) -> None:
-        await state.clear()
-        text, kb = screens.info_screen()
-        await message.answer(text, reply_markup=kb)
-
-    @dp.message(Command("cabinet"))
-    async def on_cabinet(message: Message, state: FSMContext) -> None:
-        await state.clear()
-        text, kb = _cabinet(message.from_user.id)
-        await message.answer(text, reply_markup=kb)
+            await query.answer(f"Категория уже выбрана: {label}. Сменить можно через поддержку", show_alert=True)
+        await _show(query, *_home(query.from_user.id))
 
     @dp.message(WaitKey.key, F.text, ~F.text.startswith("/"))
     async def on_key(message: Message, state: FSMContext) -> None:
@@ -201,9 +252,8 @@ def build_dispatcher() -> Dispatcher:
             except Exception:
                 pass
         if not ok:
-            await message.answer(
-                "Этот токен не сработал на запросе заказов WB. Проверьте и пришлите еще раз."
-            )
+            text, kb = screens.api_bad_screen()
+            await message.answer(text, reply_markup=kb)
             return
         with db.connect() as conn:
             user = db.get_or_create_user(conn, message.from_user.id)
@@ -215,56 +265,54 @@ def build_dispatcher() -> Dispatcher:
     @dp.message(Command("out"))
     async def on_out(message: Message, state: FSMContext) -> None:
         await state.clear()
-        text, kb = screens.out_screen()
-        await message.answer(text, reply_markup=kb)
+        await _show(message, *_sverka(message.from_user.id))
 
-    @dp.callback_query(F.data.startswith("sv:"))
-    async def on_sverka(query: CallbackQuery, state: FSMContext) -> None:
+    @dp.message(Command("cabinet"))
+    async def on_cabinet(message: Message, state: FSMContext) -> None:
+        await state.clear()
+        await _show(message, *_balance(message.from_user.id))
+
+    @dp.message(Command("info"))
+    async def on_info(message: Message, state: FSMContext) -> None:
+        await state.clear()
+        await _show(message, *screens.info_screen())
+
+    @dp.callback_query(F.data.startswith("m:"))
+    async def on_menu(query: CallbackQuery, state: FSMContext) -> None:
         await query.answer()
-        msg = query.message
-        if msg is None:
-            return
         act = query.data.split(":", 1)[1]
         uid = query.from_user.id
-        if act == "menu":
-            await state.clear()
-            text, kb = screens.out_screen()
-            await msg.answer(text, reply_markup=kb)
+        if act != "wb_new":
+            await state.clear()  # ушли с экрана токена - текст больше не ловим как токен
+        if act == "home":
+            await _show(query, *_home(uid))
         elif act == "go":
-            await state.clear()
-            text, kb = screens.go_screen(_login_link(uid))
-            await msg.answer(text, reply_markup=kb)
-        elif act == "ins":
-            await state.clear()
-            text, kb = screens.ins_screen()
-            await msg.answer(text, reply_markup=kb)
-        elif act == "api":
-            if _has_wb_key(uid):
-                text, kb = screens.api_have_screen()
-                await msg.answer(text, reply_markup=kb)
+            await _show(query, *_sverka(uid))
+        elif act == "link":
+            await _show(query, *screens.link_screen(_login_link(uid)))
+        elif act == "phone":
+            await _show(query, *screens.phone_screen(_login_link(uid)))
+        elif act == "wb":
+            if _user(uid)["wb_key_enc"]:
+                await _show(query, *screens.wb_have_screen())
             else:
-                await _send_api_new(msg, state)
-        elif act == "api_new":
-            await _send_api_new(msg, state)
+                await _send_api_new(query, state)
+        elif act == "wb_new":
+            await _send_api_new(query, state)
         elif act == "files":
-            await state.clear()
-            for photo, caption, kb in screens.files_screens():
-                await msg.answer_photo(FSInputFile(photo), caption=caption, reply_markup=kb)
-        elif act == "fl":
-            await state.clear()
-            text, kb = screens.fl_screen()
-            await msg.answer(text, reply_markup=kb)
-        elif act == "nofl":
-            await state.clear()
-            await msg.answer(screens.nofl_text())
-            text, kb = screens.go_screen(_login_link(uid))
-            await msg.answer(text, reply_markup=kb)
+            if query.message is not None:
+                await _send_files(query.message)
+        elif act == "bal":
+            await _show(query, *_balance(uid))
+        elif act == "ref":
+            await _show(query, *_ref(uid))
+        elif act == "help":
+            await _show(query, *screens.info_screen())
 
     @dp.message(Command("instrukciya"))
     async def on_instrukciya(message: Message, state: FSMContext) -> None:
         await state.clear()
-        text, kb = instrukciya_page(0)
-        await message.answer(text, reply_markup=kb)
+        await _show(message, *instrukciya_page(0))
 
     @dp.callback_query(F.data.startswith("ins:"))
     async def on_instrukciya_page(query: CallbackQuery) -> None:
@@ -272,24 +320,13 @@ def build_dispatcher() -> Dispatcher:
             i = int(query.data.split(":", 1)[1])
         except ValueError:
             i = 0
-        text, kb = instrukciya_page(i)
-        if query.message is not None:
-            try:
-                await query.message.edit_text(text, reply_markup=kb)
-            except Exception:
-                pass
         await query.answer()
+        await _show(query, *instrukciya_page(i))
 
     @dp.message(Command("help"))
     async def on_help(message: Message, state: FSMContext) -> None:
         await state.clear()
-        await message.answer(
-            "/start - начать, подключить WB по API\n/out - сделать сверку КИЗ\n"
-            "/cabinet - баланс, тарифы и реферальная ссылка\n"
-            "/info - тарифы, документы и контакты поддержки\n"
-            "/instrukciya - пошаговая инструкция\n"
-            "Кнопка Видео по сверке есть в /out, там короткие ролики по шагам."
-        )
+        await message.answer(HELP_TEXT, reply_markup=_menu_kb())
 
     # Перезапуск службы между /start и присланным токеном теряет FSM-состояние (MemoryStorage
     # не переживает рестарт) - без этого перехватчика токен повиснет в чате без ответа и без
@@ -299,14 +336,25 @@ def build_dispatcher() -> Dispatcher:
         if _looks_like_wb_key(message.text or ""):
             await on_key(message, state)
         else:
-            await message.answer(HINT_TEXT)
+            await message.answer(HINT_TEXT, reply_markup=_menu_kb())
 
     # Последним: незнакомая команда, файл, фото, стикер. Раньше бот молчал.
     @dp.message()
     async def on_other(message: Message) -> None:
-        await message.answer(HINT_TEXT)
+        await message.answer(HINT_TEXT, reply_markup=_menu_kb())
 
     return dp
+
+
+HELP_TEXT = (
+    "<b>Что умеет бот</b>\n\n"
+    "/start - главное меню: сверка, токен WB, баланс, приглашения\n"
+    "/out - сделать сверку КИЗ\n"
+    "/cabinet - баланс, тарифы и личный кабинет\n"
+    "/info - тарифы, документы и контакты поддержки\n"
+    "/instrukciya - пошаговая инструкция\n\n"
+    "Короткие видео по шагам: /out, кнопка Видео по сверке."
+)
 
 
 def _looks_like_wb_key(text: str) -> bool:
@@ -315,7 +363,6 @@ def _looks_like_wb_key(text: str) -> bool:
 
 
 async def _check_wb_key(raw_key: str) -> bool:
-    client = wb_api.WbClient(raw_key)
     try:
         async with httpx.AsyncClient(timeout=15.0) as http_client:
             r = await http_client.get(
@@ -343,7 +390,7 @@ async def setup_bot(bot: Bot) -> None:
 
 async def main() -> None:
     config.check_mode()
-    bot = Bot(token=config.BOT_TOKEN)
+    bot = Bot(token=config.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = build_dispatcher()
     await setup_bot(bot)
     await dp.start_polling(bot)

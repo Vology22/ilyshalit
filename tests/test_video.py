@@ -46,7 +46,7 @@ def test_api_and_files_sections_have_own_video():
 
 
 def test_bot_video_button_leads_to_video_section():
-    _, kb = screens.out_screen()
+    _, kb = screens.sverka_screen(True, 1)
     buttons = [b for row in kb.inline_keyboard for b in row if b.url]
     assert len(buttons) == 1
     assert buttons[0].url == config.PUBLIC_URL + "/instrukciya#video"

@@ -512,12 +512,12 @@ async def test_bot_out_after_start_gives_login_link(monkeypatch):
     await dp.feed_update(bot, _upd(9101, "/out", 2))
     from tests.test_instrukciya_bot import _cb
 
-    await dp.feed_update(bot, _cb(9101, "sv:go", 3, 902))
-    from aiogram.methods import SendMessage
+    await dp.feed_update(bot, _cb(9101, "m:link", 3, 902))
+    from aiogram.methods import EditMessageText, SendMessage
 
     links = [
         b.url
-        for m in session.calls if isinstance(m, SendMessage) and m.reply_markup
+        for m in session.calls if isinstance(m, (SendMessage, EditMessageText)) and m.reply_markup
         for row in m.reply_markup.inline_keyboard for b in row
         if b.url and "/l/" in b.url
     ]
@@ -538,7 +538,7 @@ async def test_bot_deletes_key_message_with_cyrillic(monkeypatch):
     dp = bot_main.build_dispatcher()
     from tests.test_instrukciya_bot import _cb
 
-    await dp.feed_update(bot, _cb(9102, "sv:api", 1, 901))
+    await dp.feed_update(bot, _cb(9102, "m:wb", 1, 901))
     try:
         await dp.feed_update(bot, _upd(9102, "вот ключ: testkeynotreal", 2))
     except Exception:
