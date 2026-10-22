@@ -294,6 +294,7 @@ async def setup_bot(bot: Bot) -> None:
 
 
 async def main() -> None:
+    config.check_mode()
     bot = Bot(token=config.BOT_TOKEN)
     dp = build_dispatcher()
     await setup_bot(bot)

@@ -37,6 +37,7 @@ FIAS_NEEDED = (
 
 
 def create_app() -> FastAPI:
+    config.check_mode()
     app = FastAPI(title="Сверка КИЗ")
     with db.connect() as conn:
         db.reset_sending(conn)
@@ -75,7 +76,12 @@ def create_app() -> FastAPI:
             session_id = db.create_session(conn, user_id)
         resp = RedirectResponse(url="/step1", status_code=303)
         resp.set_cookie(
-            SESSION_COOKIE, session_id, max_age=config.SESSION_TTL_HOURS * 3600, httponly=True
+            SESSION_COOKIE,
+            session_id,
+            max_age=config.SESSION_TTL_HOURS * 3600,
+            httponly=True,
+            secure=config.cookie_secure(),
+            samesite="lax",
         )
         return resp
 

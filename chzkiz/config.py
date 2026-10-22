@@ -10,7 +10,8 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 FERNET_KEY = os.environ.get("FERNET_KEY", "")
 # Только для ручной проверки реального API WB стороной разработчика, в сценарий пользователя не идет.
 WB_DEMO_TOKEN = os.environ.get("WB_DEMO_TOKEN", "")
-CHZ_MODE = os.environ.get("CHZ_MODE", "mock")  # mock | real
+# mock | real. Без значения по умолчанию: забытый .env не должен молча включать демо-режим в проде.
+CHZ_MODE = os.environ.get("CHZ_MODE", "")
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "http://127.0.0.1:8140").rstrip("/")
 WEB_PORT = int(os.environ.get("CHZ_KIZ_WEB_PORT", "8140"))
 DB_PATH = os.environ.get("CHZ_KIZ_DB", str(BASE_DIR / "data" / "chz_kiz.db"))
@@ -76,3 +77,17 @@ PG_OPTIONS = {
 
 def is_mock() -> bool:
     return CHZ_MODE.strip().lower() == "mock"
+
+
+def check_mode() -> None:
+    """Вызывается при старте панели и бота: без явного CHZ_MODE не запускаемся."""
+    mode = CHZ_MODE.strip().lower()
+    if mode not in ("mock", "real"):
+        raise RuntimeError(
+            f"CHZ_MODE должен быть mock или real, сейчас: {CHZ_MODE!r}. Проверьте, что .env загружен."
+        )
+
+
+def cookie_secure() -> bool:
+    """Cookie сессии только по HTTPS, если панель опубликована по HTTPS."""
+    return PUBLIC_URL.lower().startswith("https://")
