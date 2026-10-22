@@ -9,7 +9,7 @@
 </div>
 <p>При обращении укажите ваш Telegram ID или номер из личного кабинета и опишите, что случилось. По сверке пришлите номер документа из Честного знака, если он есть.</p>
 <h2>Исполнитель</h2>
-<p>{{ d.operator }}<br>ИНН {{ d.inn }}{% if d.ogrn %}<br>ОГРНИП {{ d.ogrn }}{% endif %}</p>
+<p>{{ d.operator }}<br>ИНН {{ d.inn }}{% if d.ogrn %}<br>ОГРНИП {{ d.ogrn }}{% endif %}{% if d.region %}<br>{{ d.region }}{% endif %}</p>
 <p><a href="/tariffs">Тарифы</a> · <a href="/terms">Пользовательское соглашение</a> · <a href="/privacy">Политика конфиденциальности</a></p>
 </div>
 {% endblock %}

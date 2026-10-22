@@ -365,6 +365,7 @@ def docs_info() -> dict[str, Any]:
         "operator": config.OPERATOR_NAME or TODO_MARK,
         "inn": config.OPERATOR_INN or TODO_MARK,
         "ogrn": config.OPERATOR_OGRN,
+        "region": config.OPERATOR_REGION,
         "contacts": ", ".join(contacts) or TODO_MARK,
         "tg": config.SUPPORT_TG,
         "email": config.SUPPORT_EMAIL,

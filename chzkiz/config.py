@@ -40,6 +40,7 @@ SERVICE_NAME = os.environ.get("SERVICE_NAME", "Сверка КИЗ")
 OPERATOR_NAME = os.environ.get("OPERATOR_NAME", "")  # например: ИП Иванов Иван Иванович
 OPERATOR_INN = os.environ.get("OPERATOR_INN", "")
 OPERATOR_OGRN = os.environ.get("OPERATOR_OGRN", "")  # ОГРНИП; у самозанятого пусто
+OPERATOR_REGION = os.environ.get("OPERATOR_REGION", "")  # например: Ставропольский край
 SUPPORT_EMAIL = os.environ.get("SUPPORT_EMAIL", "")
 SUPPORT_TG = os.environ.get("SUPPORT_TG", "").lstrip("@")  # личный юзернейм, не группа
 SUPPORT_HOURS = os.environ.get("SUPPORT_HOURS", "ежедневно с 10:00 до 20:00 по Москве")
