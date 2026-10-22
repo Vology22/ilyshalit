@@ -40,19 +40,9 @@ def _dt(ts: float | None) -> str:
 templates.env.filters["dt"] = _dt
 
 
-def _ops(n: int) -> str:
-    """3 операции, 5 операций, 21 операция."""
-    n = int(n or 0)
-    if n % 10 == 1 and n % 100 != 11:
-        word = "операция"
-    elif 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
-        word = "операции"
-    else:
-        word = "операций"
-    return f"{n} {word}"
-
-
-templates.env.filters["ops"] = _ops
+templates.env.filters["ops"] = billing.sverki  # 1 сверка, 3 сверки, 5 сверок
+templates.env.filters["tariff"] = billing.tariff_text
+templates.env.filters["date"] = billing.date
 
 
 FIAS_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -518,8 +508,9 @@ def create_app() -> FastAPI:
             run = _get_run_or_404(user_id, run_id, conn)
             rows = [dict(r) for r in db.get_items(conn, run_id)]
             # проверяем до подписи, чтобы не заставлять подписывать документ, который не уйдет
-            if billing.balance(conn, user_id) < 1:
-                raise HTTPException(status_code=402, detail=billing.NOT_ENOUGH)
+            refusal = billing.check_run(conn, user_id, run)
+            if refusal:
+                raise HTTPException(status_code=402, detail=refusal)
         in_group = [r for r in rows if r["group_name"] == group]
         if not in_group:
             raise HTTPException(status_code=400, detail="Нет кодов в этой группе.")
@@ -624,15 +615,15 @@ def create_app() -> FastAPI:
         if not claimed:
             # двойной клик или вторая вкладка: ждем исход первой отправки, второй раз в ЧЗ не шлем
             return await _wait_sent(body["doc_id"], run_id)
-        charged_now = sent_ok = False
+        sent_ok = False
         try:
             _same_document_or_409(body, fresh)
             try:
                 with db.connect() as conn:
-                    kind = "вывод" if body["chz_type"] == chz_api.DOC_TYPE_RECEIPT else "возврат"
-                    charged_now = billing.charge_document(conn, user_id, body["doc_id"], f"Документ: {kind}")
-            except billing.NotEnoughOps:
-                raise HTTPException(status_code=402, detail=billing.NOT_ENOUGH)
+                    # сверка оплачивается один раз, на первом документе запуска
+                    billing.charge_run(conn, user_id, run_id, run["inn"] or "")
+            except billing.NotEnoughOps as e:
+                raise HTTPException(status_code=402, detail=str(e))
             client = chz_client(token)
             pg = (user["pg"] if user else None) or config.DEFAULT_PG
             try:
@@ -674,8 +665,9 @@ def create_app() -> FastAPI:
             return {"ok": True, "chz_doc_id": chz_doc_id}
         finally:
             with db.connect() as conn:
-                if charged_now and not sent_ok:
-                    billing.refund_document(conn, user_id, body["doc_id"], "Документ не ушел в Честный знак")
+                if not sent_ok:
+                    # вернется, только если и другие документы сверки не ушли
+                    billing.refund_run(conn, user_id, run_id, "Документы не ушли в Честный знак", body["doc_id"])
                 db.unclaim_document(conn, body["doc_id"], doc["status"])
 
     @app.get("/step4/{run_id}/status")

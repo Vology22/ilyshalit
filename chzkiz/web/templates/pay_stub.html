@@ -3,7 +3,7 @@
 <div class="login-box">
   <h1>Тестовая оплата</h1>
   <p class="warn">Это заглушка платежного сервиса: деньги не списываются. На сервере с настоящей оплатой здесь будет страница ЮKassa.</p>
-  <p>Тариф <b>{{ p.tariff_name }}</b>: {{ p.ops }} операций за <b>{{ rub(p.amount_kop) }}</b></p>
+  <p>Тариф <b>{{ p.tariff_name }}</b>: {{ p | tariff }} за <b>{{ rub(p.amount_kop) }}</b></p>
   {% if p.status == "pending" %}
   <form method="post" action="/pay/stub/{{ p.id }}">
     <button type="submit" name="action" value="pay">Оплатить</button>

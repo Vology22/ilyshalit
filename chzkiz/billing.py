@@ -1,8 +1,9 @@
-"""Баланс операций, тарифы, платежи и реферальные начисления.
+"""Баланс сверок, безлимит, тарифы, платежи и реферальные начисления.
 
-Операция = один документ вывода или возврата. Списывается перед отправкой в Честный знак
-и возвращается, если отправка сорвалась или ЧЗ отклонил документ целиком. Все изменения
-баланса идут через _move: одна транзакция, запись в ledger с балансом после."""
+Сверка = один запуск, сколько бы документов вывода и возврата в нем ни ушло. Оплачивается
+перед отправкой первого документа: по безлимиту, если он покрывает ИНН подписи, иначе одной
+сверкой с баланса. Возвращается, если ни один документ не дошел или ЧЗ отклонил все целиком.
+Все изменения баланса идут через _move: одна транзакция, запись в ledger с балансом после."""
 from __future__ import annotations
 
 import secrets
@@ -17,19 +18,25 @@ from . import config
 KIND_LABELS = {
     "welcome": "Бесплатно при регистрации",
     "purchase": "Покупка тарифа",
-    "spend": "Документ отправлен в Честный знак",
-    "refund": "Возврат: документ не принят",
+    "spend": "Сверка",
+    "unlim": "Сверка по безлимиту",
+    "refund": "Возврат: сверка не состоялась",
     "referral": "Бонус за приглашенного",
     "admin": "Корректировка администратором",
 }
 PAYMENT_LABELS = {"pending": "Ожидает оплаты", "succeeded": "Оплачен", "canceled": "Отменен"}
 REWARD_LABELS = {"accrued": "Начислено, к выплате", "paid": "Выплачено", "credited": "Зачислено на баланс"}
 
-NOT_ENOUGH = "Закончились операции. Пополните баланс в личном кабинете: каждый документ вывода или возврата - одна операция."
+NOT_ENOUGH = "Закончились сверки. Купите сверки или безлимит в личном кабинете."
+DAY = 86400
 
 
 class NotEnoughOps(Exception):
     pass
+
+
+class InnLimit(NotEnoughOps):
+    """Безлимит есть, но все его ИНН заняты другими организациями, а сверок на балансе нет."""
 
 
 def _move(conn: sqlite3.Connection, user_id: int, delta: int, kind: str, ref: str = "", note: str = "") -> int:
@@ -62,17 +69,67 @@ def history(conn: sqlite3.Connection, user_id: int, limit: int = 50) -> list[sql
     ).fetchall()
 
 
-# --- списание за документ ------------------------------------------------------
+# --- списание за сверку ------------------------------------------------------------
 
-def charge_document(conn: sqlite3.Connection, user_id: int, doc_id: str, note: str = "") -> bool:
-    """Списать операцию за документ. False - уже списана раньше (повторная отправка того же
-    документа после сбоя связи второй раз не списывает). NotEnoughOps - баланс пуст."""
+def inn_limit_text(sub: dict[str, Any]) -> str:
+    inns = ", ".join(sub["inns"]) or "-"
+    return (
+        f"Ваш безлимит на {sub['inn_limit']} ИНН уже занят: {inns}. Эта подпись другой организации. "
+        "Войдите подписью одной из этих организаций, перейдите на безлимит с большим числом ИНН "
+        "или купите разовые сверки."
+    )
+
+
+def subscription(conn: sqlite3.Connection, user_id: int, now: float | None = None) -> dict[str, Any] | None:
+    """Действующий безлимит: лимит ИНН, срок и уже закрепленные ИНН. None - безлимита нет или он истек."""
+    row = conn.execute("SELECT * FROM subscriptions WHERE user_id = ?", (user_id,)).fetchone()
+    if not row or row["ends_at"] <= (now or time.time()):
+        return None
+    inns = [r[0] for r in conn.execute(
+        "SELECT inn FROM sub_inns WHERE user_id = ? ORDER BY added_at, inn", (user_id,)
+    )]
+    return {"inn_limit": row["inn_limit"], "ends_at": row["ends_at"], "inns": inns}
+
+
+def _covers(sub: dict[str, Any] | None, inn: str) -> bool:
+    return bool(sub and inn and (inn in sub["inns"] or len(sub["inns"]) < sub["inn_limit"]))
+
+
+def check_run(conn: sqlite3.Connection, user_id: int, run: Any) -> str:
+    """Проверка до подписи, без списания. Пустая строка - сверку можно оплатить, иначе причина отказа."""
+    if run["charged"]:
+        return ""
+    sub = subscription(conn, user_id)
+    inn = run["inn"] or ""
+    if _covers(sub, inn) or balance(conn, user_id) >= 1:
+        return ""
+    return inn_limit_text(sub) if sub and inn else NOT_ENOUGH
+
+
+def charge_run(conn: sqlite3.Connection, user_id: int, run_id: str, inn: str) -> bool:
+    """Оплатить сверку: по безлимиту, если он покрывает ИНН подписи, иначе одна сверка с баланса.
+    False - сверка уже оплачена (второй документ той же сверки не списывает). NotEnoughOps или
+    InnLimit - платить нечем."""
     try:
-        cur = conn.execute("UPDATE documents SET charged = 1 WHERE id = ? AND charged = 0", (doc_id,))
+        cur = conn.execute("UPDATE runs SET charged = 1 WHERE id = ? AND charged = 0", (run_id,))
         if cur.rowcount != 1:
             conn.commit()
             return False
-        _move(conn, user_id, -1, "spend", doc_id, note)
+        sub = subscription(conn, user_id)
+        if _covers(sub, inn):
+            conn.execute(
+                "INSERT OR IGNORE INTO sub_inns (user_id, inn, added_at) VALUES (?, ?, ?)", (user_id, inn, time.time())
+            )
+            conn.execute("UPDATE runs SET charge_kind = 'unlim' WHERE id = ?", (run_id,))
+            _move(conn, user_id, 0, "unlim", run_id, f"Сверка по безлимиту, ИНН {inn}")
+        else:
+            try:
+                _move(conn, user_id, -1, "spend", run_id, f"Сверка, ИНН {inn}" if inn else "")
+            except NotEnoughOps:
+                if sub and inn:
+                    raise InnLimit(inn_limit_text(sub)) from None
+                raise
+            conn.execute("UPDATE runs SET charge_kind = 'ops' WHERE id = ?", (run_id,))
         conn.commit()
         return True
     except BaseException:
@@ -80,27 +137,38 @@ def charge_document(conn: sqlite3.Connection, user_id: int, doc_id: str, note: s
         raise
 
 
-def refund_document(conn: sqlite3.Connection, user_id: int, doc_id: str, note: str = "") -> bool:
-    """Вернуть операцию за документ, если она была списана. Повторный вызов ничего не делает."""
-    cur = conn.execute("UPDATE documents SET charged = 0 WHERE id = ? AND charged = 1", (doc_id,))
-    if cur.rowcount != 1:
-        conn.commit()
+def refund_run(conn: sqlite3.Connection, user_id: int, run_id: str, note: str, exclude_doc: str = "") -> bool:
+    """Вернуть сверку, если ни один ее документ не дошел до Честного знака или все отклонены целиком.
+    Документ, который ждет решения ЧЗ или прямо сейчас отправляется, держит оплату. Повтор безопасен."""
+    busy = conn.execute(
+        "SELECT COUNT(*) FROM documents WHERE run_id = ? AND id != ? AND ("
+        "(COALESCE(chz_doc_id, '') != '' AND status != 'CHECKED_NOT_OK') OR status = 'SENDING')",
+        (run_id, exclude_doc),
+    ).fetchone()[0]
+    if busy:
         return False
-    _move(conn, user_id, 1, "refund", doc_id, note)
+    run = conn.execute("SELECT charge_kind FROM runs WHERE id = ? AND charged = 1", (run_id,)).fetchone()
+    if not run:
+        return False
+    conn.execute("UPDATE runs SET charged = 0, charge_kind = '' WHERE id = ?", (run_id,))
+    if run["charge_kind"] == "ops":
+        _move(conn, user_id, 1, "refund", run_id, note)
     conn.commit()
     return True
 
 
 def settle_document(conn: sqlite3.Connection, user_id: int, doc_id: str, chz_doc_id: str) -> None:
-    """ЧЗ вынес решение. Все части документа отклонены - операцию возвращаем;
-    принята хотя бы часть кодов - операция потрачена."""
+    """ЧЗ вынес решение. Документ отклонен целиком - проверяем, не пора ли вернуть сверку:
+    если другие ее документы тоже не приняты, сверка не состоялась."""
     if not chz_doc_id:
         return
     statuses = {
         r[0] for r in conn.execute("SELECT status FROM documents WHERE chz_doc_id = ?", (chz_doc_id,))
     }
     if statuses and statuses == {"CHECKED_NOT_OK"}:
-        refund_document(conn, user_id, doc_id, "Честный знак отклонил документ")
+        row = conn.execute("SELECT run_id FROM documents WHERE id = ?", (doc_id,)).fetchone()
+        if row:
+            refund_run(conn, user_id, row["run_id"], "Честный знак отклонил документы сверки")
 
 
 # --- тарифы ----------------------------------------------------------------------
@@ -115,17 +183,24 @@ def get_tariff(conn: sqlite3.Connection, tariff_id: int) -> sqlite3.Row | None:
 
 
 def save_tariff(
-    conn: sqlite3.Connection, tariff_id: int | None, name: str, ops: int, price_kop: int, active: bool, sort: int
+    conn: sqlite3.Connection, tariff_id: int | None, name: str, ops: int, price_kop: int, active: bool, sort: int,
+    kind: str = "pack", inn_limit: int = 0, days: int = 0,
 ) -> int:
+    if kind != "unlim":
+        kind, inn_limit, days = "pack", 0, 0
+    else:
+        ops = 0
     if tariff_id:
         conn.execute(
-            "UPDATE tariffs SET name = ?, ops = ?, price_kop = ?, active = ?, sort = ? WHERE id = ?",
-            (name, ops, price_kop, int(active), sort, tariff_id),
+            "UPDATE tariffs SET name = ?, kind = ?, ops = ?, inn_limit = ?, days = ?, price_kop = ?, active = ?, "
+            "sort = ? WHERE id = ?",
+            (name, kind, ops, inn_limit, days, price_kop, int(active), sort, tariff_id),
         )
     else:
         cur = conn.execute(
-            "INSERT INTO tariffs (name, ops, price_kop, active, sort, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (name, ops, price_kop, int(active), sort, time.time()),
+            "INSERT INTO tariffs (name, kind, ops, inn_limit, days, price_kop, active, sort, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (name, kind, ops, inn_limit, days, price_kop, int(active), sort, time.time()),
         )
         tariff_id = cur.lastrowid
     conn.commit()
@@ -135,12 +210,13 @@ def save_tariff(
 # --- платежи -----------------------------------------------------------------------
 
 def create_payment(conn: sqlite3.Connection, user_id: int, tariff: sqlite3.Row, provider: str) -> str:
-    """Цена и число операций копируются в платеж: смена тарифа админом не меняет уже выставленный счет."""
+    """Цена и состав тарифа копируются в платеж: смена тарифа админом не меняет уже выставленный счет."""
     payment_id = uuid.uuid4().hex
     conn.execute(
-        "INSERT INTO payments (id, user_id, tariff_id, tariff_name, ops, amount_kop, provider, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (payment_id, user_id, tariff["id"], tariff["name"], tariff["ops"], tariff["price_kop"], provider, time.time()),
+        "INSERT INTO payments (id, user_id, tariff_id, tariff_name, kind, ops, inn_limit, days, amount_kop, provider, "
+        "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (payment_id, user_id, tariff["id"], tariff["name"], tariff["kind"], tariff["ops"], tariff["inn_limit"],
+         tariff["days"], tariff["price_kop"], provider, time.time()),
     )
     conn.commit()
     return payment_id
@@ -175,7 +251,7 @@ def cancel_payment(conn: sqlite3.Connection, payment_id: str) -> None:
 
 
 def apply_payment(conn: sqlite3.Connection, payment_id: str) -> bool:
-    """Платеж прошел: операции на баланс и реферальное начисление. Ровно один раз, даже если
+    """Платеж прошел: сверки на баланс или безлимит, и реферальное начисление. Ровно один раз, даже если
     уведомление пришло дважды или одновременно с возвратом покупателя на сайт."""
     try:
         cur = conn.execute(
@@ -186,13 +262,65 @@ def apply_payment(conn: sqlite3.Connection, payment_id: str) -> bool:
             conn.commit()
             return False
         p = get_payment(conn, payment_id)
-        _move(conn, p["user_id"], p["ops"], "purchase", payment_id, f"Тариф {p['tariff_name']}")
+        if p["kind"] == "unlim":
+            ends = _extend_subscription(conn, p["user_id"], p["inn_limit"], p["days"])
+            _move(conn, p["user_id"], 0, "purchase", payment_id, f"{p['tariff_name']}, до {date(ends)}")
+        else:
+            _move(conn, p["user_id"], p["ops"], "purchase", payment_id, f"Тариф {p['tariff_name']}")
         _reward_referrer(conn, p)
         conn.commit()
         return True
     except BaseException:
         conn.rollback()
         raise
+
+
+def _extend_subscription(conn: sqlite3.Connection, user_id: int, inn_limit: int, days: int) -> float:
+    """Действующий безлимит продлевается от его конца, ИНН сохраняются, лимит берется больший.
+    Истекший начинается заново с сегодняшнего дня и с пустым списком ИНН."""
+    now = time.time()
+    row = conn.execute("SELECT * FROM subscriptions WHERE user_id = ?", (user_id,)).fetchone()
+    if row and row["ends_at"] > now:
+        ends = row["ends_at"] + days * DAY
+        conn.execute(
+            "UPDATE subscriptions SET ends_at = ?, inn_limit = MAX(inn_limit, ?) WHERE user_id = ?",
+            (ends, inn_limit, user_id),
+        )
+        return ends
+    ends = now + days * DAY
+    conn.execute("DELETE FROM sub_inns WHERE user_id = ?", (user_id,))
+    conn.execute(
+        "INSERT OR REPLACE INTO subscriptions (user_id, inn_limit, starts_at, ends_at) VALUES (?, ?, ?, ?)",
+        (user_id, inn_limit, now, ends),
+    )
+    return ends
+
+
+def reset_inns(conn: sqlite3.Connection, user_id: int) -> None:
+    """Админ освобождает ИНН безлимита (ошиблись подписью); срок не меняется."""
+    conn.execute("DELETE FROM sub_inns WHERE user_id = ?", (user_id,))
+    conn.commit()
+
+
+def date(ts: float) -> str:
+    return time.strftime("%d.%m.%Y", time.localtime(ts))
+
+
+def tariff_text(t: Any) -> str:
+    """Что дает тариф или платеж: "3 сверки" или "безлимит до 2 ИНН на 30 дней"."""
+    if t["kind"] == "unlim":
+        return f"безлимит до {t['inn_limit']} ИНН на {t['days']} дней"
+    return sverki(t["ops"])
+
+
+def sverki(n: int) -> str:
+    """1 сверка, 3 сверки, 5 сверок."""
+    n = int(n or 0)
+    if n % 10 == 1 and n % 100 != 11:
+        return f"{n} сверка"
+    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+        return f"{n} сверки"
+    return f"{n} сверок"
 
 
 def _reward_referrer(conn: sqlite3.Connection, p: sqlite3.Row) -> None:
@@ -351,21 +479,22 @@ def admin_summary(conn: sqlite3.Connection) -> dict[str, Any]:
         "no_cat": q("SELECT COUNT(*) FROM users WHERE category = ''"),
         "paying": q("SELECT COUNT(DISTINCT user_id) FROM payments WHERE status = 'succeeded'"),
         "revenue": revenue,
-        # списания минус возвраты за 30 дней
-        "spent_month": -q(
-            "SELECT COALESCE(SUM(delta), 0) FROM ledger WHERE kind IN ('spend', 'refund') AND created_at >= ?",
-            now - 30 * 86400,
-        ),
+        # оплаченные сверки за 30 дней, с баланса и по безлимиту
+        "spent_month": q("SELECT COUNT(*) FROM runs WHERE charged = 1 AND created_at >= ?", now - 30 * DAY),
+        "subs_active": q("SELECT COUNT(*) FROM subscriptions WHERE ends_at > ?", now),
         "due_kop": q("SELECT COALESCE(SUM(amount_kop), 0) FROM ref_rewards WHERE kind = 'money' AND status = 'accrued'"),
         "payments_pending": q("SELECT COUNT(*) FROM payments WHERE status = 'pending'"),
+        "support_open": q("SELECT COUNT(*) FROM support_threads WHERE status = 'open'"),
     }
 
 
 def admin_users(conn: sqlite3.Connection, search: str = "", limit: int = 200) -> list[sqlite3.Row]:
     sql = (
         "SELECT u.*, (SELECT COUNT(*) FROM users r WHERE r.referred_by = u.id) AS invited, "
-        "(SELECT COALESCE(SUM(amount_kop), 0) FROM payments p WHERE p.user_id = u.id AND p.status = 'succeeded') AS paid_kop "
-        "FROM users u"
+        "(SELECT COALESCE(SUM(amount_kop), 0) FROM payments p WHERE p.user_id = u.id AND p.status = 'succeeded') AS paid_kop, "
+        "s.ends_at AS sub_ends, s.inn_limit AS sub_limit, "
+        "(SELECT GROUP_CONCAT(inn, ', ') FROM sub_inns i WHERE i.user_id = u.id) AS sub_inns "
+        "FROM users u LEFT JOIN subscriptions s ON s.user_id = u.id"
     )
     args: list[Any] = []
     if search.strip():

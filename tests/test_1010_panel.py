@@ -76,7 +76,7 @@ def test_explain_known(text, expected):
 def test_explain_unknown_keeps_original_and_asks_screen():
     answer = chz_errors.explain("Странный сбой 42")
     assert answer.startswith("Странный сбой 42")
-    assert "Пришлите скрин разработчику" in answer
+    assert "Пришлите скрин в поддержку" in answer
 
 
 def test_explain_empty():
@@ -136,13 +136,13 @@ def test_rejected_code_shows_explanation_on_page_and_in_excel():
     status = c.get(f"/step4/{run_id}/status").json()
     bad = [d for d in status["documents"] if d["errors"]]
     assert bad and "отклонен" in bad[0]["errors"]
-    assert "Пришлите скрин разработчику" in bad[0]["explain"]
+    assert "Пришлите скрин в поддержку" in bad[0]["explain"]
 
     r = c.get(f"/report/{run_id}")
     ws = openpyxl.load_workbook(io.BytesIO(r.content))["Ошибки"]
     rows = list(ws.iter_rows(values_only=True))
     assert rows[0][-1] == "Что делать"
-    assert "Пришлите скрин разработчику" in rows[1][-1]
+    assert "Пришлите скрин в поддержку" in rows[1][-1]
     assert "отклонен" in rows[1][5]
 
 

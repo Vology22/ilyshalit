@@ -51,7 +51,7 @@ class YooKassaProvider:
             "amount": {"value": _rub(payment["amount_kop"]), "currency": "RUB"},
             "capture": True,
             "confirmation": {"type": "redirect", "return_url": return_url},
-            "description": f"Тариф {payment['tariff_name']}: {payment['ops']} операций"[:128],
+            "description": f"Тариф {payment['tariff_name']}"[:128],
             "metadata": {"payment_id": payment["id"]},
         }
         if config.YOOKASSA_RECEIPT:

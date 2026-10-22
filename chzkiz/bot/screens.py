@@ -11,7 +11,7 @@ from urllib.parse import quote
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from .. import config
+from .. import billing, config
 
 IMG_DIR = Path(__file__).resolve().parent / "img"
 IMG_API = IMG_DIR / "api_token.png"
@@ -47,12 +47,14 @@ def _home_row() -> list[InlineKeyboardButton]:
 
 
 def ops_word(n: int) -> str:
-    """3 операции, 5 операций, 21 операция."""
-    if n % 10 == 1 and n % 100 != 11:
-        return f"{n} операция"
-    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
-        return f"{n} операции"
-    return f"{n} операций"
+    """1 сверка, 3 сверки, 5 сверок."""
+    return billing.sverki(n)
+
+
+def _sub_line(sub: dict[str, Any] | None) -> str:
+    if not sub:
+        return ""
+    return f"\n♾ Безлимит до <b>{billing.date(sub['ends_at'])}</b>, ИНН {len(sub['inns'])} из {sub['inn_limit']}"
 
 
 def _rub(kop: int) -> str:
@@ -84,34 +86,45 @@ def welcome_screen(name: str = "") -> tuple[str, InlineKeyboardMarkup]:
 category_screen = welcome_screen
 
 
-def home_screen(balance: int, has_key: bool, category: str = "") -> tuple[str, InlineKeyboardMarkup]:
+def home_screen(
+    balance: int, has_key: bool, category: str = "", team: bool = False, sub: dict[str, Any] | None = None,
+    chat: str = "",
+) -> tuple[str, InlineKeyboardMarkup]:
+    """chat: '' - обращения нет, open - открыто, unread - оператор ответил, пользователь не видел."""
     who = config.CATEGORIES.get(category, "")
     text = (
         "<b>Сверка КИЗ · Wildberries FBS</b>\n\n"
         "Выведу из оборота проданные КИЗ и верну в оборот КИЗ по возвратам ваших товаров. "
         "Подпись остается у вас: документы подписываете в панели на компьютере.\n\n"
-        f"💳 Баланс: <b>{ops_word(balance)}</b>\n"
+        f"💳 Баланс: <b>{ops_word(balance)}</b>{_sub_line(sub)}\n"
         f"🔑 Токен WB: {'подключен ✅' if has_key else 'не подключен'}"
         + (f"\n👤 {who}" if who else "")
     )
+    chat_row = []
+    if chat:
+        label = "💬 Чат с поддержкой · 🔴 новый ответ" if chat == "unread" else "💬 Чат с поддержкой"
+        chat_row = [_cb(label, "sup:chat")]
     return text, _kb(
+        chat_row,
         [_cb("🚀 Сделать сверку", "m:go")],
         [_cb("🔑 Токен WB", "m:wb"), _cb("📁 По файлам", "m:files")],
         [_cb("💳 Баланс и тарифы", "m:bal"), _cb("🎁 Пригласить", "m:ref")],
         [_cb("📖 Инструкция", "ins:0"), _cb("💬 Помощь", "m:help")],
+        [_cb("🛠 Админ-панель", "adm:home")] if team else [],
     )
 
 
 # --- сверка -----------------------------------------------------------------------------
 
-def sverka_screen(has_key: bool, balance: int) -> tuple[str, InlineKeyboardMarkup]:
+def sverka_screen(has_key: bool, balance: int, sub: dict[str, Any] | None = None) -> tuple[str, InlineKeyboardMarkup]:
     source = (
         "🔑 Данные возьму из WB по API, токен уже подключен."
         if has_key else
         "📁 Токен WB не подключен: загрузите в панели файлы отчетов WB или подключите токен, "
         "тогда данные возьму сам."
     )
-    low = "\n\n⚠️ Операции закончились: пополните баланс, чтобы отправить документы." if balance < 1 else ""
+    empty = balance < 1 and not sub
+    low = "\n\n⚠️ Сверки закончились: купите сверки или безлимит, чтобы отправить документы." if empty else ""
     text = (
         "🚀 <b>Сверка КИЗ</b>\n\n"
         "1️⃣ Проверю статусы ваших КИЗ в Честном знаке\n"
@@ -122,8 +135,8 @@ def sverka_screen(has_key: bool, balance: int) -> tuple[str, InlineKeyboardMarku
     rows: list[list[InlineKeyboardButton]] = [[_cb("🔗 Открыть панель сверки", "m:link")]]
     if not has_key:
         rows.append([_cb("🔑 Подключить токен", "m:wb_new"), _cb("📁 Какие файлы", "m:files")])
-    if balance < 1:
-        rows.append([_cb("💳 Пополнить баланс", "m:bal")])
+    if empty:
+        rows.append([_cb("💳 Купить сверки", "m:bal")])
     rows.append([_url("▶️ Видео по сверке", f"{config.PUBLIC_URL}/instrukciya#video")])
     rows.append(_home_row())
     return text, _kb(*rows)
@@ -230,16 +243,22 @@ def files_done_screen() -> tuple[str, InlineKeyboardMarkup]:
 
 # --- баланс, рефералы, помощь ------------------------------------------------------------
 
-def balance_screen(balance: int, tariffs: list[Any], link: str) -> tuple[str, InlineKeyboardMarkup]:
-    lines = [
-        f"💳 <b>Баланс: {ops_word(balance)}</b>\n",
-        "Одна операция = один документ вывода или возврата в Честном знаке. "
-        "Если Честный знак отклонит документ, операция вернется.\n",
-    ]
+def balance_screen(
+    balance: int, tariffs: list[Any], link: str, sub: dict[str, Any] | None = None
+) -> tuple[str, InlineKeyboardMarkup]:
+    lines = [f"💳 <b>Баланс: {ops_word(balance)}</b>{_sub_line(sub)}\n"]
+    if sub:
+        inns = ", ".join(sub["inns"]) or "закрепятся первыми подписями"
+        lines.append(f"ИНН безлимита: {escape(inns)}\n")
+    lines.append(
+        "Одна сверка = один запуск со всеми документами вывода и возврата. "
+        "Если Честный знак не принял ни один документ сверки, она вернется.\n"
+    )
     if tariffs:
         lines.append("<b>Тарифы</b>")
         for t in tariffs:
-            lines.append(f"• {escape(t['name'])}: {ops_word(t['ops'])} за <b>{_rub(t['price_kop'])}</b>")
+            what = (f"{t['days']} дней, до {t['inn_limit']} ИНН" if t["kind"] == "unlim" else ops_word(t["ops"]))
+            lines.append(f"• {escape(t['name'])}: {what} за <b>{_rub(t['price_kop'])}</b>")
     lines.append("\nКупить тариф и посмотреть историю можно в личном кабинете. Ссылка в кнопке разовая, 15 минут.")
     return "\n".join(lines), _kb([_url("💳 Личный кабинет", link)], _home_row())
 
@@ -278,25 +297,17 @@ def ref_screen(category: str, ref_link: str, stats: dict[str, Any]) -> tuple[str
 
 
 def info_screen() -> tuple[str, InlineKeyboardMarkup]:
-    contacts = []
-    if config.SUPPORT_TG:
-        contacts.append(f"Telegram: @{escape(config.SUPPORT_TG)}")
-    if config.SUPPORT_EMAIL:
-        contacts.append(f"Email: {escape(config.SUPPORT_EMAIL)}")
     text = (
-        "💬 <b>Помощь, тарифы и документы</b>\n\n"
-        "Одна операция = один документ вывода или возврата в Честном знаке. "
-        f"При регистрации {ops_word(config.FREE_OPS)} бесплатно.\n\n"
-        "<b>Поддержка</b>\n" + ("\n".join(contacts) or "контакты скоро появятся") + "\n"
-        f"Время работы: {escape(config.SUPPORT_HOURS)}"
+        "📄 <b>Тарифы и документы</b>\n\n"
+        "Одна сверка = один запуск со всеми документами вывода и возврата. "
+        f"При регистрации {ops_word(config.FREE_OPS)} бесплатно. "
+        "Есть безлимит на месяц для 2 или 3 ИНН.\n\n"
+        f"Поддержка отвечает прямо в этом боте. Время работы: {escape(config.SUPPORT_HOURS)}"
     )
     url = config.PUBLIC_URL
-    rows = [
+    return text, _kb(
         [_url("💰 Тарифы и цены", f"{url}/tariffs")],
         [_url("📄 Соглашение", f"{url}/terms"), _url("🔒 Конфиденциальность", f"{url}/privacy")],
-        [_url("💬 Поддержка", f"{url}/support")],
-    ]
-    if config.SUPPORT_TG:
-        rows[2].append(_url("✍️ Написать", f"https://t.me/{config.SUPPORT_TG}"))
-    rows.append(_home_row())
-    return text, _kb(*rows)
+        [_cb("✍️ Написать в поддержку", "sup:new")],
+        [_cb("‹ Помощь", "m:help"), *_home_row()],
+    )

@@ -1,4 +1,4 @@
-"""Баланс операций, оплата, рефералы, кабинет и админка."""
+"""Баланс сверок, безлимит, оплата, рефералы, кабинет и админка."""
 from __future__ import annotations
 
 import base64
@@ -83,56 +83,75 @@ def test_starye_polzovateli_poluchayut_operacii_odin_raz():
     assert _bal(u["id"]) == 3
 
 
-def test_spisanie_i_vozvrat_za_dokument_odin_raz():
-    u = _user(7003)
+def _run(user_id: int) -> str:
     with db.connect() as conn:
-        run_id = db.create_run(conn, u["id"], "api")
-        doc_id = db.create_document(conn, run_id, "LK_RECEIPT", ["c1"])
-        assert billing.charge_document(conn, u["id"], doc_id) is True
-        assert billing.charge_document(conn, u["id"], doc_id) is False
+        return db.create_run(conn, user_id, "api")
+
+
+def test_sverka_spisyvaetsya_odin_raz_i_vozvrashchaetsya():
+    u = _user(7003)
+    run_id = _run(u["id"])
+    with db.connect() as conn:
+        assert billing.charge_run(conn, u["id"], run_id, "111") is True
+        assert billing.charge_run(conn, u["id"], run_id, "111") is False  # второй документ той же сверки
         assert billing.balance(conn, u["id"]) == 2
-        assert billing.refund_document(conn, u["id"], doc_id) is True
-        assert billing.refund_document(conn, u["id"], doc_id) is False
+        assert billing.refund_run(conn, u["id"], run_id, "тест") is True
+        assert billing.refund_run(conn, u["id"], run_id, "тест") is False
         assert billing.balance(conn, u["id"]) == 3
 
 
 def test_pustoy_balans_ne_daet_spisat():
     u = _user(7004)
+    run_id = _run(u["id"])
     with db.connect() as conn:
         billing.admin_adjust(conn, u["id"], -3, "обнулить")
-        run_id = db.create_run(conn, u["id"], "api")
-        doc_id = db.create_document(conn, run_id, "LK_RECEIPT", ["c1"])
         with pytest.raises(billing.NotEnoughOps):
-            billing.charge_document(conn, u["id"], doc_id)
+            billing.charge_run(conn, u["id"], run_id, "111")
         assert billing.balance(conn, u["id"]) == 0
-        assert db.get_document(conn, doc_id, run_id)["charged"] == 0
+        assert db.get_run(conn, run_id, u["id"])["charged"] == 0
+
+
+def test_otpravlennyy_dokument_derzhit_oplatu():
+    u = _user(7005)
+    run_id = _run(u["id"])
+    with db.connect() as conn:
+        billing.charge_run(conn, u["id"], run_id, "111")
+        sent = db.create_document(conn, run_id, "LK_RECEIPT", ["c1"])
+        failed = db.create_document(conn, run_id, "LK_RETURN", ["c2"])
+        db.set_document_chz_id(conn, sent, "chz-1")
+        # второй документ не ушел, но первый уже в Честном знаке: сверка состоялась
+        assert billing.refund_run(conn, u["id"], run_id, "тест", failed) is False
+        assert billing.balance(conn, u["id"]) == 2
 
 
 # --- списание в сценарии шага 4 --------------------------------------------------------
 
-def test_kazhdyy_dokument_spisyvaet_operaciyu():
+def test_vyvod_i_vozvrat_eto_odna_sverka():
     c = _client(7010)
     uid = _user(7010)["id"]
     run_id = _signed_in_run(c)
     assert _send(c, run_id, "output").status_code == 200
     assert _bal(uid) == 2
     assert _send(c, run_id, "return").status_code == 200
-    assert _bal(uid) == 1
+    assert _bal(uid) == 2  # возврат в той же сверке бесплатно
     assert c.get(f"/step4/{run_id}/status").json()["done"] is True
-    assert _bal(uid) == 1  # принятые ЧЗ документы не возвращаются
+    assert _bal(uid) == 2  # принятые ЧЗ документы не возвращаются
+    run2 = _signed_in_run(c)
+    assert _send(c, run2, "output").status_code == 200
+    assert _bal(uid) == 1  # новая сверка - новое списание
 
 
-def test_bez_operaciy_dokument_ne_sobiraetsya():
+def test_bez_sverok_dokument_ne_sobiraetsya():
     c = _client(7011)
     uid = _user(7011)["id"]
     with db.connect() as conn:
         billing.admin_adjust(conn, uid, -3, "обнулить")
     run_id = _signed_in_run(c)
     r = _send(c, run_id, "output")
-    assert r.status_code == 402 and "Пополните баланс" in r.json()["detail"]
+    assert r.status_code == 402 and "Закончились сверки" in r.json()["detail"]
 
 
-def test_otklonennyy_chz_dokument_vozvrashchaet_operaciyu():
+def test_otklonennye_dokumenty_vozvrashchayut_sverku():
     c = _client(7012)
     uid = _user(7012)["id"]
     run_id = _signed_in_run(c)
@@ -146,7 +165,7 @@ def test_otklonennyy_chz_dokument_vozvrashchaet_operaciyu():
     assert kinds[:2] == ["refund", "spend"]
 
 
-def test_sboy_otpravki_vozvrashchaet_operaciyu(monkeypatch):
+def test_sboy_otpravki_vozvrashchaet_sverku(monkeypatch):
     from chzkiz.web import app as app_mod
 
     async def obryv(*a, **k):
@@ -160,6 +179,81 @@ def test_sboy_otpravki_vozvrashchaet_operaciyu(monkeypatch):
     assert _bal(uid) == 3
 
 
+# --- безлимит и ИНН --------------------------------------------------------------------
+
+def _unlim(inn_limit: int):
+    with db.connect() as conn:
+        return next(t for t in billing.tariffs(conn) if t["kind"] == "unlim" and t["inn_limit"] == inn_limit)
+
+
+def _buy(user_id: int, tariff) -> str:
+    with db.connect() as conn:
+        pid = billing.create_payment(conn, user_id, tariff, "stub")
+        assert billing.apply_payment(conn, pid)
+    return pid
+
+
+def test_bezlimit_zakreplyaet_inn_i_ne_tratit_balans():
+    u = _user(7014)
+    _buy(u["id"], _unlim(2))
+    with db.connect() as conn:
+        for inn in ("111", "222", "111"):
+            assert billing.charge_run(conn, u["id"], _run(u["id"]), inn) is True
+        sub = billing.subscription(conn, u["id"])
+        assert sub["inns"] == ["111", "222"] and sub["inn_limit"] == 2
+        assert billing.balance(conn, u["id"]) == 3  # разовые не тратятся
+        # третий ИНН не влезает в тариф: платит баланс
+        assert billing.charge_run(conn, u["id"], _run(u["id"]), "333") is True
+        assert billing.balance(conn, u["id"]) == 2
+        assert billing.subscription(conn, u["id"])["inns"] == ["111", "222"]
+        billing.admin_adjust(conn, u["id"], -2, "обнулить")
+        with pytest.raises(billing.InnLimit, match="111, 222"):
+            billing.charge_run(conn, u["id"], _run(u["id"]), "333")
+        # админ освободил ИНН: место снова свободно
+        billing.reset_inns(conn, u["id"])
+        assert billing.charge_run(conn, u["id"], _run(u["id"]), "333") is True
+
+
+def test_bezlimit_tretiy_inn_v_paneli():
+    c = _client(7015)
+    uid = _user(7015)["id"]
+    _buy(uid, _unlim(2))
+    with db.connect() as conn:
+        billing.admin_adjust(conn, uid, -3, "обнулить")
+        for inn in ("111", "222"):
+            billing.charge_run(conn, uid, _run(uid), inn)
+    run_id = _signed_in_run(c)  # подпись демо-организации, третий ИНН
+    r = _send(c, run_id, "output")
+    assert r.status_code == 402 and "безлимит на 2 ИНН уже занят" in r.json()["detail"]
+    with db.connect() as conn:
+        billing.reset_inns(conn, uid)
+    assert _send(c, run_id, "output").status_code == 200
+    with db.connect() as conn:
+        assert billing.subscription(conn, uid)["inns"] == [chz_mock.DEMO_OUR_INN]
+        assert db.get_run(conn, run_id, uid)["charge_kind"] == "unlim"
+
+
+def test_prodlenie_bezlimita_i_istechenie():
+    u = _user(7016)
+    _buy(u["id"], _unlim(2))
+    with db.connect() as conn:
+        first = billing.subscription(conn, u["id"])["ends_at"]
+        billing.charge_run(conn, u["id"], _run(u["id"]), "111")
+    _buy(u["id"], _unlim(3))  # продление раньше срока: дни прибавляются, лимит растет, ИНН остаются
+    with db.connect() as conn:
+        sub = billing.subscription(conn, u["id"])
+        assert round(sub["ends_at"] - first) == 30 * billing.DAY
+        assert sub["inn_limit"] == 3 and sub["inns"] == ["111"]
+        conn.execute("UPDATE subscriptions SET ends_at = 1 WHERE user_id = ?", (u["id"],))
+        conn.commit()
+        assert billing.subscription(conn, u["id"]) is None
+        assert billing.charge_run(conn, u["id"], _run(u["id"]), "111") is True
+        assert billing.balance(conn, u["id"]) == 2  # после срока платит баланс
+    _buy(u["id"], _unlim(2))  # новый срок: ИНН с чистого листа
+    with db.connect() as conn:
+        assert billing.subscription(conn, u["id"])["inns"] == []
+
+
 # --- оплата ----------------------------------------------------------------------------
 
 def _tariff():
@@ -170,7 +264,7 @@ def _tariff():
 def test_startovye_tarify_est():
     with db.connect() as conn:
         names = [t["name"] for t in billing.tariffs(conn)]
-    assert names == ["Старт", "Стандарт", "Бизнес"]
+    assert names == ["1 сверка", "3 сверки", "5 сверок", "Безлимит до 2 ИНН", "Безлимит до 3 ИНН"]
 
 
 def test_oplata_vyklyuchena_bez_provaydera(monkeypatch):
@@ -191,7 +285,8 @@ def test_publichnye_stranicy_i_put_pokupki(monkeypatch):
     c = TestClient(create_app())  # без входа
     r = c.get("/tariffs")
     assert r.status_code == 200
-    for t in ("Старт", "590 ₽", "Купить", "Одна операция - один документ"):
+    for t in ("3 сверки", "750 ₽", "250 ₽ за сверку", "Безлимит до 2 ИНН", "до 2 ИНН", "1 000 ₽", "Купить",
+              "Одна сверка - один запуск"):
         assert t in r.text
     for page, text in (("/privacy", "Политика конфиденциальности"), ("/terms", "Пользовательское соглашение"),
                        ("/support", "@kiz_support")):
@@ -278,7 +373,7 @@ def test_fulfilment_poluchaet_procent_s_kazhdoy_oplaty_i_vyplatu():
     b = _user(7041, code)
     _pay(b["id"])
     _pay(b["id"])
-    assert _bal(a["id"]) == 3  # операций фулфилменту не дают
+    assert _bal(a["id"]) == 3  # сверок фулфилменту не дают
     with db.connect() as conn:
         st = billing.ref_stats(conn, a["id"])
         assert st["accrued_kop"] == 2 * price * 20 // 100
@@ -319,8 +414,8 @@ def test_kabinet_pokazyvaet_balans_i_ssylku(monkeypatch):
     c = _client(7070)
     r = c.get("/cabinet")
     assert r.status_code == 200
-    assert "операций на балансе" in r.text and "https://t.me/kiz_test_bot?start=ref_" in r.text
-    assert "3 опер." in c.get("/step1").text  # баланс в шапке
+    assert "сверок на балансе" in r.text and "https://t.me/kiz_test_bot?start=ref_" in r.text
+    assert "3 сверки" in c.get("/step1").text  # баланс в шапке
     c.post("/cabinet/category", data={"category": "fulfillment"})
     assert "Реквизиты для выплат" in c.get("/cabinet").text
 
@@ -357,10 +452,17 @@ def test_admin_menyaet_tarif_balans_kategoriyu(monkeypatch):
     t = _tariff()
     a.post("/admin/tariffs", data={"tariff_id": t["id"], "name": "Старт+", "ops": 12, "price": "650,50", "sort": 1, "active": "1"})
     a.post("/admin/tariffs", data={"name": "Мини", "ops": 3, "price": "199", "sort": 0})
+    a.post("/admin/tariffs", data={"name": "Безлимит 5", "kind": "unlim", "inn_limit": 5, "days": 90,
+                                   "price": "4990", "sort": 9, "active": "1"})
+    r = a.post("/admin/tariffs", data={"name": "Кривой", "kind": "unlim", "price": "100"})
+    assert "число ИНН и срок" in r.text
     with db.connect() as conn:
         t2 = billing.get_tariff(conn, t["id"])
         assert (t2["name"], t2["ops"], t2["price_kop"]) == ("Старт+", 12, 65050)
         assert "Мини" not in [x["name"] for x in billing.tariffs(conn)]  # добавлен скрытым
+        u5 = [x for x in billing.tariffs(conn) if x["name"] == "Безлимит 5"][0]
+        assert (u5["kind"], u5["inn_limit"], u5["days"], u5["ops"]) == ("unlim", 5, 90, 0)
+        assert "Кривой" not in [x["name"] for x in billing.tariffs(conn, active_only=False)]
     a.post(f"/admin/users/{u['id']}/balance", data={"delta": 10, "note": "подарок"})
     assert _bal(u["id"]) == 13
     r = a.post(f"/admin/users/{u['id']}/balance", data={"delta": -100, "note": ""})
@@ -468,4 +570,6 @@ async def test_bot_start_s_referalnoy_ssylkoy_i_kategoriya():
     await dp.feed_update(bot, _upd(7111, "/info", 3))
     last = [m for m in session.calls if isinstance(m, SendMessage)][-1]
     urls = [b.url for b in _buttons(last.reply_markup) if b.url]
-    assert [u.rsplit("/", 1)[1] for u in urls] == ["tariffs", "terms", "privacy", "support"]
+    assert [u.rsplit("/", 1)[1] for u in urls] == ["tariffs", "terms", "privacy"]
+    # поддержка ведет в бота, а не на сайт
+    assert "sup:new" in [b.callback_data for b in _buttons(last.reply_markup)]

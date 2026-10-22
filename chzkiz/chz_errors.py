@@ -36,7 +36,7 @@ _RULES: list[tuple[tuple[str, ...], str]] = [
     ),
 ]
 
-UNKNOWN = "Пришлите скрин разработчику."
+UNKNOWN = "Пришлите скрин в поддержку: в боте Помощь, Написать в поддержку."
 
 
 def _has_marker(raw: str, low: str, marker: str) -> bool:

@@ -8,7 +8,7 @@ import logging
 import re
 
 import httpx
-from aiogram import Bot, Dispatcher, F
+from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
@@ -20,8 +20,8 @@ from aiogram.types import (
     BotCommand, CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Message,
 )
 
-from .. import billing, config, crypto, db, wb_api
-from . import screens
+from .. import billing, config, crypto, db, staff, wb_api
+from . import admin, screens, support
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("chzkiz.bot")
@@ -133,12 +133,18 @@ def _user(tg_id: int):
 
 def _home(tg_id: int) -> tuple[str, InlineKeyboardMarkup]:
     u = _user(tg_id)
-    return screens.home_screen(u["balance"], bool(u["wb_key_enc"]), u["category"])
+    with db.connect() as conn:
+        team = staff.is_staff(conn, tg_id)
+        sub = billing.subscription(conn, u["id"])
+    return screens.home_screen(u["balance"], bool(u["wb_key_enc"]), u["category"], team, sub,
+                               support.menu_state(tg_id))
 
 
 def _sverka(tg_id: int) -> tuple[str, InlineKeyboardMarkup]:
     u = _user(tg_id)
-    return screens.sverka_screen(bool(u["wb_key_enc"]), u["balance"])
+    with db.connect() as conn:
+        sub = billing.subscription(conn, u["id"])
+    return screens.sverka_screen(bool(u["wb_key_enc"]), u["balance"], sub)
 
 
 def _balance(tg_id: int) -> tuple[str, InlineKeyboardMarkup]:
@@ -146,7 +152,8 @@ def _balance(tg_id: int) -> tuple[str, InlineKeyboardMarkup]:
     with db.connect() as conn:
         u = db.get_or_create_user(conn, tg_id)
         tariffs = [dict(t) for t in billing.tariffs(conn)]
-    return screens.balance_screen(u["balance"], tariffs, link)
+        sub = billing.subscription(conn, u["id"])
+    return screens.balance_screen(u["balance"], tariffs, link, sub)
 
 
 def _ref(tg_id: int) -> tuple[str, InlineKeyboardMarkup]:
@@ -208,8 +215,13 @@ async def _send_files(msg: Message) -> None:
 
 def build_dispatcher() -> Dispatcher:
     dp = Dispatcher(storage=MemoryStorage())
+    dp.include_router(support.build_group_router())
+    dp.include_router(admin.build_router(_show))
+    r = Router()
+    # личные чаты: в группе операторов бот не отвечает подсказками на их переписку
+    r.message.filter(F.chat.type == "private")
 
-    @dp.message(CommandStart())
+    @r.message(CommandStart())
     async def on_start(message: Message, state: FSMContext, command: CommandObject) -> None:
         await state.clear()
         payload = (command.args or "").strip()
@@ -223,7 +235,7 @@ def build_dispatcher() -> Dispatcher:
             text, kb = _home(message.from_user.id)
         await message.answer(text, reply_markup=kb)
 
-    @dp.callback_query(F.data.startswith("cat:"))
+    @r.callback_query(F.data.startswith("cat:"))
     async def on_category(query: CallbackQuery) -> None:
         category = query.data.split(":", 1)[1]
         with db.connect() as conn:
@@ -237,7 +249,7 @@ def build_dispatcher() -> Dispatcher:
             await query.answer(f"Категория уже выбрана: {label}. Сменить можно через поддержку", show_alert=True)
         await _show(query, *_home(query.from_user.id))
 
-    @dp.message(WaitKey.key, F.text, ~F.text.startswith("/"))
+    @r.message(WaitKey.key, F.text, ~F.text.startswith("/"))
     async def on_key(message: Message, state: FSMContext) -> None:
         raw_key = message.text.strip()
         ok = False
@@ -262,22 +274,22 @@ def build_dispatcher() -> Dispatcher:
         text, kb = screens.api_ok_screen()
         await message.answer(text, reply_markup=kb)
 
-    @dp.message(Command("out"))
+    @r.message(Command("out"))
     async def on_out(message: Message, state: FSMContext) -> None:
         await state.clear()
         await _show(message, *_sverka(message.from_user.id))
 
-    @dp.message(Command("cabinet"))
+    @r.message(Command("cabinet"))
     async def on_cabinet(message: Message, state: FSMContext) -> None:
         await state.clear()
         await _show(message, *_balance(message.from_user.id))
 
-    @dp.message(Command("info"))
+    @r.message(Command("info"))
     async def on_info(message: Message, state: FSMContext) -> None:
         await state.clear()
         await _show(message, *screens.info_screen())
 
-    @dp.callback_query(F.data.startswith("m:"))
+    @r.callback_query(F.data.startswith("m:"))
     async def on_menu(query: CallbackQuery, state: FSMContext) -> None:
         await query.answer()
         act = query.data.split(":", 1)[1]
@@ -307,14 +319,18 @@ def build_dispatcher() -> Dispatcher:
         elif act == "ref":
             await _show(query, *_ref(uid))
         elif act == "help":
+            await _show(query, *support.help_screen())
+        elif act == "docs":
             await _show(query, *screens.info_screen())
 
-    @dp.message(Command("instrukciya"))
+    support.register_private(r, _show)
+
+    @r.message(Command("instrukciya"))
     async def on_instrukciya(message: Message, state: FSMContext) -> None:
         await state.clear()
         await _show(message, *instrukciya_page(0))
 
-    @dp.callback_query(F.data.startswith("ins:"))
+    @r.callback_query(F.data.startswith("ins:"))
     async def on_instrukciya_page(query: CallbackQuery) -> None:
         try:
             i = int(query.data.split(":", 1)[1])
@@ -323,7 +339,7 @@ def build_dispatcher() -> Dispatcher:
         await query.answer()
         await _show(query, *instrukciya_page(i))
 
-    @dp.message(Command("help"))
+    @r.message(Command("help"))
     async def on_help(message: Message, state: FSMContext) -> None:
         await state.clear()
         await message.answer(HELP_TEXT, reply_markup=_menu_kb())
@@ -331,18 +347,25 @@ def build_dispatcher() -> Dispatcher:
     # Перезапуск службы между /start и присланным токеном теряет FSM-состояние (MemoryStorage
     # не переживает рестарт) - без этого перехватчика токен повиснет в чате без ответа и без
     # удаления. Ловим в любом состоянии, регистрируя последним, чтобы не перебивать /out, /help.
-    @dp.message(F.text, ~F.text.startswith("/"))
-    async def on_key_anywhere(message: Message, state: FSMContext) -> None:
+    @r.message(F.text, ~F.text.startswith("/"))
+    async def on_key_anywhere(message: Message, state: FSMContext, bot: Bot) -> None:
         if _looks_like_wb_key(message.text or ""):
             await on_key(message, state)
+        elif support.has_open_thread(message.from_user.id):
+            await support.deliver(message, bot, confirm=False)  # дописка к открытому обращению
         else:
             await message.answer(HINT_TEXT, reply_markup=_menu_kb())
 
     # Последним: незнакомая команда, файл, фото, стикер. Раньше бот молчал.
-    @dp.message()
-    async def on_other(message: Message) -> None:
-        await message.answer(HINT_TEXT, reply_markup=_menu_kb())
+    @r.message()
+    async def on_other(message: Message, bot: Bot) -> None:
+        is_command = bool(message.text and message.text.startswith("/"))
+        if not is_command and support.has_open_thread(message.from_user.id):
+            await support.deliver(message, bot, confirm=False)  # скриншот или файл к обращению
+        else:
+            await message.answer(HINT_TEXT, reply_markup=_menu_kb())
 
+    dp.include_router(r)
     return dp
 
 
@@ -388,12 +411,27 @@ async def setup_bot(bot: Bot) -> None:
     await bot.set_my_short_description(BOT_SHORT_DESCRIPTION)
 
 
+async def _remind_loop(bot: Bot) -> None:
+    """Раз в 5 минут напоминает операторам об обращениях без ответа."""
+    while True:
+        await asyncio.sleep(300)
+        try:
+            await support.remind(bot)
+        except Exception:  # noqa: BLE001 - таймер не должен останавливать бота
+            log.exception("support reminders failed")
+
+
 async def main() -> None:
     config.check_mode()
     bot = Bot(token=config.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = build_dispatcher()
     await setup_bot(bot)
-    await dp.start_polling(bot)
+    await admin.sync_staff_commands(bot)
+    reminders = asyncio.create_task(_remind_loop(bot))
+    try:
+        await dp.start_polling(bot)
+    finally:
+        reminders.cancel()
 
 
 if __name__ == "__main__":

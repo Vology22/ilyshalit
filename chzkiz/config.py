@@ -43,6 +43,10 @@ OPERATOR_OGRN = os.environ.get("OPERATOR_OGRN", "")  # ОГРНИП; у само
 SUPPORT_EMAIL = os.environ.get("SUPPORT_EMAIL", "")
 SUPPORT_TG = os.environ.get("SUPPORT_TG", "").lstrip("@")  # личный юзернейм, не группа
 SUPPORT_HOURS = os.environ.get("SUPPORT_HOURS", "ежедневно с 10:00 до 20:00 по Москве")
+# Закрытая супергруппа операторов с темами: на каждого пользователя своя тема. ID узнать командой
+# /chatid в самой группе (вид -100...). Пусто - кнопка «Написать человеку» показывает контакты.
+_support_chat = os.environ.get("SUPPORT_CHAT_ID", "").strip()
+SUPPORT_CHAT_ID = int(_support_chat) if _support_chat.lstrip("-").isdigit() else 0
 DOCS_DATE = "22.10.2026"  # дата редакции политики и соглашения: менять при каждой правке текста
 
 LOGIN_LINK_TTL_MIN = 15

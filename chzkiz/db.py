@@ -73,7 +73,7 @@ CREATE TABLE IF NOT EXISTS documents (
     errors TEXT
 );
 
--- Движение операций: каждое начисление и списание, баланс после него.
+-- Движение баланса сверок: каждое начисление и списание, баланс после него.
 CREATE TABLE IF NOT EXISTS ledger (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
@@ -112,7 +112,7 @@ CREATE TABLE IF NOT EXISTS payments (
 );
 CREATE INDEX IF NOT EXISTS payments_user ON payments (user_id, created_at);
 
--- Реферальные начисления: ops - операции селлеру (сразу на баланс), money - деньги фулфилменту
+-- Реферальные начисления: ops - сверки селлеру (сразу на баланс), money - деньги фулфилменту
 -- (accrued, пока админ не отметит выплату).
 CREATE TABLE IF NOT EXISTS ref_rewards (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -127,6 +127,56 @@ CREATE TABLE IF NOT EXISTS ref_rewards (
     paid_at REAL
 );
 CREATE INDEX IF NOT EXISTS ref_rewards_referrer ON ref_rewards (referrer_id, status);
+
+-- Поддержка: у пользователя одна тема в группе операторов, обращение открыто или закрыто.
+CREATE TABLE IF NOT EXISTS support_threads (
+    user_id INTEGER PRIMARY KEY,
+    topic_id INTEGER,
+    status TEXT NOT NULL DEFAULT 'closed',
+    opened_at REAL,
+    last_user_at REAL,
+    last_op_at REAL
+);
+CREATE INDEX IF NOT EXISTS support_threads_topic ON support_threads (topic_id);
+
+-- Команда поддержки: админы управляют командой, операторы отвечают пользователям.
+CREATE TABLE IF NOT EXISTS staff (
+    tg_id INTEGER PRIMARY KEY,
+    role TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    added_by INTEGER,
+    added_at REAL NOT NULL
+);
+
+-- Настройки, которые меняются из бота без правки .env (например, группа поддержки).
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS support_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    direction TEXT NOT NULL,
+    text TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL
+);
+
+-- Безлимит: у пользователя одна подписка, продление сдвигает ends_at.
+CREATE TABLE IF NOT EXISTS subscriptions (
+    user_id INTEGER PRIMARY KEY,
+    inn_limit INTEGER NOT NULL,
+    starts_at REAL NOT NULL,
+    ends_at REAL NOT NULL
+);
+
+-- ИНН, закрепленные за подпиской: заполняются первыми подписями, сбрасываются с новым сроком.
+CREATE TABLE IF NOT EXISTS sub_inns (
+    user_id INTEGER NOT NULL,
+    inn TEXT NOT NULL,
+    added_at REAL NOT NULL,
+    PRIMARY KEY (user_id, inn)
+);
 """
 
 
@@ -202,29 +252,46 @@ def _migrate(conn: sqlite3.Connection) -> None:
     add_col("users", "email", "TEXT NOT NULL DEFAULT ''")
     add_col("users", "welcome_given", "INTEGER NOT NULL DEFAULT 0")
     add_col("documents", "charged", "INTEGER NOT NULL DEFAULT 0")
+    add_col("support_threads", "reminded_at", "REAL")
+    add_col("support_threads", "seen_at", "REAL")
+    # тарифы двух видов: пакет сверок и безлимит на срок для нескольких ИНН
+    for table in ("tariffs", "payments"):
+        add_col(table, "kind", "TEXT NOT NULL DEFAULT 'pack'")
+        add_col(table, "inn_limit", "INTEGER NOT NULL DEFAULT 0")
+        add_col(table, "days", "INTEGER NOT NULL DEFAULT 0")
+    # сверка оплачивается один раз за запуск: charge_kind - ops (с баланса) или unlim (по безлимиту)
+    add_col("runs", "charged", "INTEGER NOT NULL DEFAULT 0")
+    add_col("runs", "charge_kind", "TEXT NOT NULL DEFAULT ''")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS users_ref_code ON users (ref_code)")
     conn.execute("CREATE INDEX IF NOT EXISTS users_referred_by ON users (referred_by)")
-    # Пользователи, пришедшие до биллинга, тоже получают бесплатные операции, один раз.
+    # Пользователи, пришедшие до биллинга, тоже получают бесплатные сверки, один раз.
     for row in conn.execute("SELECT id FROM users WHERE welcome_given = 0").fetchall():
         _grant_welcome(conn, row["id"])
-    if conn.execute("SELECT COUNT(*) FROM tariffs").fetchone()[0] == 0:
+    # Старые тарифы (пакеты операций) скрываем один раз и ставим новую сетку; дальше ее меняет админ.
+    if not conn.execute("SELECT 1 FROM settings WHERE key = 'tariffs_v2'").fetchone():
         now = time.time()
+        conn.execute("UPDATE tariffs SET active = 0")
         conn.executemany(
-            "INSERT INTO tariffs (name, ops, price_kop, sort, created_at) VALUES (?, ?, ?, ?, ?)",
-            [(name, ops, price * 100, sort, now) for name, ops, price, sort in DEFAULT_TARIFFS],
+            "INSERT INTO tariffs (name, kind, ops, inn_limit, days, price_kop, sort, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [(name, kind, ops, inns, days, price * 100, sort, now)
+             for name, kind, ops, inns, days, price, sort in DEFAULT_TARIFFS],
         )
+        conn.execute("INSERT INTO settings (key, value) VALUES ('tariffs_v2', '1')")
 
 
-# Стартовые тарифы, дальше их меняет админ: название, операций, цена в рублях, порядок.
+# Стартовые тарифы: название, вид, сверок, ИНН, дней, цена в рублях, порядок.
 DEFAULT_TARIFFS = [
-    ("Старт", 10, 590, 1),
-    ("Стандарт", 30, 1490, 2),
-    ("Бизнес", 100, 3990, 3),
+    ("1 сверка", "pack", 1, 0, 0, 300, 1),
+    ("3 сверки", "pack", 3, 0, 0, 750, 2),
+    ("5 сверок", "pack", 5, 0, 0, 1000, 3),
+    ("Безлимит до 2 ИНН", "unlim", 0, 2, 30, 1000, 4),
+    ("Безлимит до 3 ИНН", "unlim", 0, 3, 30, 1500, 5),
 ]
 
 
 def _grant_welcome(conn: sqlite3.Connection, user_id: int) -> None:
-    """Бесплатные операции при регистрации; флаг welcome_given не дает выдать их дважды."""
+    """Бесплатные сверки при регистрации; флаг welcome_given не дает выдать их дважды."""
     cur = conn.execute(
         "UPDATE users SET welcome_given = 1, balance = balance + ? WHERE id = ? AND welcome_given = 0",
         (config.FREE_OPS, user_id),
@@ -234,7 +301,7 @@ def _grant_welcome(conn: sqlite3.Connection, user_id: int) -> None:
     balance = conn.execute("SELECT balance FROM users WHERE id = ?", (user_id,)).fetchone()[0]
     conn.execute(
         "INSERT INTO ledger (user_id, delta, kind, note, balance_after, created_at) VALUES (?, ?, 'welcome', ?, ?, ?)",
-        (user_id, config.FREE_OPS, "Бесплатные операции при регистрации", balance, time.time()),
+        (user_id, config.FREE_OPS, "Бесплатные сверки при регистрации", balance, time.time()),
     )
 
 

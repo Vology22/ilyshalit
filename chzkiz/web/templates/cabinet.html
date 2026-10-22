@@ -4,11 +4,17 @@
 {% if notice %}<p class="notice">{{ notice }}</p>{% endif %}
 
 <div class="kpis">
-  <div class="kpi kpi-main"><span class="n">{{ user.balance }}</span><span class="l">операций на балансе</span></div>
+  <div class="kpi kpi-main"><span class="n">{{ user.balance }}</span><span class="l">сверок на балансе</span></div>
+  {% if sub %}
+  <div class="kpi kpi-main"><span class="n">до {{ sub.ends_at | date }}</span><span class="l">безлимит, ИНН {{ sub.inns | length }} из {{ sub.inn_limit }}</span></div>
+  {% endif %}
   <div class="kpi"><span class="n">{{ categories.get(user.category, "не выбрана") }}</span><span class="l">категория</span></div>
   <div class="kpi"><span class="n">{{ ref.invited }}</span><span class="l">приглашено</span></div>
 </div>
-<p class="hint">Одна операция - один документ вывода или возврата, принятый Честным знаком. Если Честный знак отклонит документ, операция вернется на баланс.</p>
+<p class="hint">Одна сверка - один запуск со всеми документами вывода и возврата. Если ни один документ сверки не принят Честным знаком, сверка вернется на баланс.{% if sub %} Пока действует безлимит, сверки с баланса не тратятся.{% endif %}</p>
+{% if sub %}
+<p>Безлимит до {{ sub.inn_limit }} ИНН действует до <b>{{ sub.ends_at | date }}</b>. ИНН: <b>{{ sub.inns | join(", ") if sub.inns else "пока нет, закрепятся первыми подписями" }}</b>. Продление прибавляет дни к сроку.</p>
+{% endif %}
 
 {% if not user.category %}
 <h2>Кто вы?</h2>
@@ -28,9 +34,15 @@
   {% for t in tariffs %}
   <form class="tariff" method="post" action="/cabinet/buy">
     <div class="t-name">{{ t.name }}</div>
-    <div class="t-ops">{{ t.ops }} <span>операций</span></div>
+    {% if t.kind == "unlim" %}
+    <div class="t-ops">∞ <span>сверок на {{ t.days }} дней</span></div>
     <div class="t-price">{{ rub(t.price_kop) }}</div>
-    <div class="hint">{{ rub(t.price_kop // t.ops) }} за операцию</div>
+    <div class="hint">до {{ t.inn_limit }} ИНН в кабинете</div>
+    {% else %}
+    <div class="t-ops">{{ t.ops }} <span>{{ (t.ops | ops).split(" ", 1)[1] }}</span></div>
+    <div class="t-price">{{ rub(t.price_kop) }}</div>
+    <div class="hint">{{ rub(t.price_kop // t.ops) }} за сверку</div>
+    {% endif %}
     <input type="hidden" name="tariff_id" value="{{ t.id }}">
     <button type="submit"{% if need_email and not user.email %} disabled{% endif %}>Купить</button>
   </form>
@@ -46,7 +58,7 @@
 {% if user.category == "fulfillment" %}
 <p>Вы получаете <b>{{ ref_percent }}%</b> от всех оплат приглашенных клиентов. Выплаты раз в неделю на реквизиты ниже.</p>
 {% else %}
-<p>За каждого приглашенного, который оплатит тариф, вы получите <b>{{ ref_bonus }} операции</b> на баланс.</p>
+<p>За каждого приглашенного, который оплатит тариф, вы получите <b>{{ ref_bonus | ops }}</b> на баланс.</p>
 {% endif %}
 <div class="ref-link">
   <input id="ref-link" readonly value="{{ ref_link }}">
@@ -59,7 +71,7 @@
   <div class="kpi"><span class="n">{{ rub(ref.accrued_kop) }}</span><span class="l">к выплате</span></div>
   <div class="kpi"><span class="n">{{ rub(ref.paid_kop) }}</span><span class="l">выплачено</span></div>
   {% else %}
-  <div class="kpi"><span class="n">{{ ref.ops }}</span><span class="l">операций получено</span></div>
+  <div class="kpi"><span class="n">{{ ref.ops }}</span><span class="l">сверок получено</span></div>
   {% endif %}
 </div>
 {% if rewards %}
@@ -86,7 +98,7 @@
   <button type="submit" class="tab">Сохранить</button>
 </form>
 
-<h2 id="history">История операций</h2>
+<h2 id="history">История баланса</h2>
 {% if history %}
 <div class="table-wrap"><table>
   <thead><tr><th>Дата</th><th>Изменение</th><th>Что</th><th>Баланс</th></tr></thead>
@@ -94,7 +106,7 @@
   {% for h in history %}
   <tr>
     <td>{{ h.created_at | dt }}</td>
-    <td class="{{ 'plus' if h.delta > 0 else 'minus' }}">{{ "%+d"|format(h.delta) }}</td>
+    <td class="{{ 'plus' if h.delta > 0 else 'minus' if h.delta < 0 else '' }}">{{ "%+d"|format(h.delta) if h.delta else "безлимит" }}</td>
     <td>{{ h.note or kind_labels.get(h.kind, h.kind) }}</td>
     <td>{{ h.balance_after }}</td>
   </tr>
@@ -111,7 +123,7 @@
   <thead><tr><th>Дата</th><th>Тариф</th><th>Сумма</th><th>Статус</th></tr></thead>
   <tbody>
   {% for p in payments_list %}
-  <tr><td>{{ p.created_at | dt }}</td><td>{{ p.tariff_name }}, {{ p.ops }} опер.</td><td>{{ rub(p.amount_kop) }}</td><td>{{ payment_labels.get(p.status, p.status) }}</td></tr>
+  <tr><td>{{ p.created_at | dt }}</td><td>{{ p.tariff_name }}: {{ p | tariff }}</td><td>{{ rub(p.amount_kop) }}</td><td>{{ payment_labels.get(p.status, p.status) }}</td></tr>
   {% endfor %}
   </tbody>
 </table></div>

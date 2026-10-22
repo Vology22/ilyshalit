@@ -9,6 +9,8 @@ from tests.test_instrukciya_bot import _buttons, _cb
 from tests.test_regress_1 import _bot_env, _upd
 
 
+_SUB = {"inn_limit": 2, "ends_at": 1893456000.0, "inns": ["7700000000"]}
+
 def _all_screen_texts():
     from chzkiz.bot import screens
 
@@ -17,7 +19,10 @@ def _all_screen_texts():
         screens.sverka_screen(False, 0)[0], screens.sverka_screen(True, 5)[0], screens.link_screen("http://x")[0],
         screens.phone_screen("http://x")[0], screens.wb_have_screen()[0], screens.api_new_screen()[1],
         screens.api_ok_screen()[0], screens.api_bad_screen()[0], screens.files_done_screen()[0],
-        screens.balance_screen(2, [{"name": "Старт", "ops": 10, "price_kop": 59000}], "http://x")[0],
+        screens.balance_screen(2, [{"name": "3 сверки", "kind": "pack", "ops": 3, "price_kop": 75000},
+                                   {"name": "Безлимит до 2 ИНН", "kind": "unlim", "ops": 0, "inn_limit": 2,
+                                    "days": 30, "price_kop": 100000}], "http://x", _SUB)[0],
+        screens.home_screen(0, True, sub=_SUB)[0], screens.sverka_screen(True, 0, _SUB)[0],
         screens.ref_screen("seller", "https://t.me/b?start=ref_x", _stats())[0],
         screens.ref_screen("fulfillment", "https://t.me/b?start=ref_x", _stats())[0],
         screens.info_screen()[0],
@@ -102,18 +107,29 @@ def test_home_shows_balance_and_token_status():
     from chzkiz.bot import screens
 
     text, kb = screens.home_screen(21, True, "fulfillment")
-    assert "21 операция" in text and "подключен ✅" in text and "Фулфилмент" in text
+    assert "21 сверка" in text and "подключен ✅" in text and "Фулфилмент" in text
     assert "КИЗ по возвратам ваших товаров" in text
     assert _cbs(kb) == ["m:go", "m:wb", "m:files", "m:bal", "m:ref", "ins:0", "m:help"]
     assert "не подключен" in screens.home_screen(0, False)[0]
+
+
+def test_bezlimit_v_menyu_i_sverke():
+    from chzkiz.bot import screens
+
+    text, _ = screens.home_screen(0, True, sub=_SUB)
+    assert "Безлимит до <b>" in text and "ИНН 1 из 2" in text
+    text, kb = screens.sverka_screen(True, 0, _SUB)
+    assert "закончились" not in text and "m:bal" not in _cbs(kb)  # с безлимитом баланс не нужен
+    text, kb = screens.sverka_screen(True, 0)
+    assert "Сверки закончились" in text and "m:bal" in _cbs(kb)
 
 
 def test_ops_word():
     from chzkiz.bot.screens import ops_word
 
     assert [ops_word(n) for n in (1, 2, 5, 11, 12, 21, 22, 25, 101)] == [
-        "1 операция", "2 операции", "5 операций", "11 операций", "12 операций",
-        "21 операция", "22 операции", "25 операций", "101 операция",
+        "1 сверка", "2 сверки", "5 сверок", "11 сверок", "12 сверок",
+        "21 сверка", "22 сверки", "25 сверок", "101 сверка",
     ]
 
 
@@ -127,7 +143,7 @@ def test_sverka_screen_adapts_to_token_and_balance():
     assert "/l/" not in text
     text, kb = screens.sverka_screen(False, 0)
     assert _cbs(kb) == ["m:link", "m:wb_new", "m:files", "m:bal", "m:home"]
-    assert "Операции закончились" in text
+    assert "Сверки закончились" in text
 
 
 def test_every_screen_leads_home():
@@ -144,7 +160,7 @@ def test_ref_screen_share_button():
     from chzkiz.bot import screens
 
     text, kb = screens.ref_screen("seller", "https://t.me/kiz_bot?start=ref_abc", _stats())
-    assert "<code>https://t.me/kiz_bot?start=ref_abc</code>" in text and "Получено: <b>3 операции</b>" in text
+    assert "<code>https://t.me/kiz_bot?start=ref_abc</code>" in text and "Получено: <b>3 сверки</b>" in text
     share = [b.url for b in _buttons(kb) if b.url][0]
     assert share.startswith("https://t.me/share/url?url=https%3A%2F%2Ft.me%2Fkiz_bot")
     text, kb = screens.ref_screen("fulfillment", "ref_abc", _stats())
@@ -273,7 +289,8 @@ async def test_balance_screen_lists_tariffs_and_cabinet_link():
     dp = bot_main.build_dispatcher()
     await dp.feed_update(bot, _upd(9711, "/cabinet", 1))
     m = _sent(session, SendMessage)[-1]
-    assert "Баланс: 3 операции" in m.text and "Старт: 10 операций за <b>590 ₽</b>" in m.text
+    assert "Баланс: 3 сверки" in m.text and "3 сверки: 3 сверки за <b>750 ₽</b>" in m.text
+    assert "Безлимит до 2 ИНН: 30 дней, до 2 ИНН за <b>1 000 ₽</b>" in m.text
     assert any(u.endswith("?next=/cabinet") for u in _links(session))
 
 

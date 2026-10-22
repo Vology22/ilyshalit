@@ -9,7 +9,7 @@ from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from .. import billing, config, db, payments
+from .. import billing, config, db, payments, staff, support
 
 log = logging.getLogger("chzkiz.account")
 
@@ -27,7 +27,8 @@ def register(
         user_id = require_user(request)
         with db.connect() as conn:
             user = db.get_user(conn, user_id)
-        if not user or user["tg_id"] not in config.ADMIN_TG_IDS:
+            allowed = bool(user) and staff.is_admin(conn, user["tg_id"])
+        if not allowed:
             raise HTTPException(status_code=404, detail="Not Found")  # не выдаем, что админка есть
         return user_id
 
@@ -54,6 +55,7 @@ def register(
                 "ref_link": billing.ref_link(code),
                 "ref": billing.ref_stats(conn, user_id),
                 "rewards": billing.user_rewards(conn, user_id),
+                "sub": billing.subscription(conn, user_id),
             }
         ctx.update(
             categories=config.CATEGORIES,
@@ -110,7 +112,7 @@ def register(
             # кнопка кликабельна всегда (требование платежной системы), пока оплаты нет - заглушка
             return pay_info(request, "Оплата пока недоступна",
                             "Мы подключаем платежный сервис. Оплата появится в ближайшее время, "
-                            "а пока можно пользоваться бесплатными операциями.")
+                            "а пока можно пользоваться бесплатными сверками.")
         try:
             prov = payments.provider()
         except payments.PaymentError as e:
@@ -147,9 +149,11 @@ def register(
             with db.connect() as conn:
                 p = billing.get_payment(conn, payment_id)
         if p["status"] == "succeeded":
-            return f"Оплата прошла: начислено {p['ops']} операций."
+            if p["kind"] == "unlim":
+                return f"Оплата прошла: подключен {billing.tariff_text(p)}."
+            return f"Оплата прошла: начислено {billing.sverki(p['ops'])}."
         if p["status"] == "canceled":
-            return "Оплата отменена, операции не начислены."
+            return "Оплата отменена, ничего не списано."
         return "Ждем подтверждения оплаты. Обновите страницу через минуту."
 
     async def _sync_payment(p: Any) -> None:
@@ -280,6 +284,13 @@ def register(
                 return error_page("Нельзя списать больше, чем есть на балансе.")
         return back(f"/admin/users?q={user_id}")
 
+    @app.post("/admin/users/{user_id}/inns/reset")
+    async def admin_user_inns_reset(request: Request, user_id: int) -> RedirectResponse:
+        require_admin(request)
+        with db.connect() as conn:
+            billing.reset_inns(conn, user_id)
+        return back(f"/admin/users?q={user_id}")
+
     @app.get("/admin/tariffs")
     async def admin_tariffs(request: Request) -> HTMLResponse:
         require_admin(request)
@@ -291,7 +302,10 @@ def register(
         request: Request,
         tariff_id: str = Form(""),
         name: str = Form(...),
-        ops: int = Form(...),
+        kind: str = Form("pack"),
+        ops: int = Form(0),
+        inn_limit: int = Form(0),
+        days: int = Form(0),
         price: str = Form(...),
         sort: int = Form(0),
         active: str = Form(""),
@@ -302,11 +316,15 @@ def register(
             price_kop = round(float(price.replace(",", ".").replace(" ", "")) * 100)
         except ValueError:
             return error_page("Цена должна быть числом, например 990 или 990.50.")
-        if not name or ops <= 0 or price_kop <= 0:
-            return error_page("Нужны название, число операций больше нуля и цена больше нуля.")
+        if not name or price_kop <= 0:
+            return error_page("Нужны название и цена больше нуля.")
+        if kind == "unlim" and (inn_limit <= 0 or days <= 0):
+            return error_page("У безлимита должны быть число ИНН и срок в днях больше нуля.")
+        if kind != "unlim" and ops <= 0:
+            return error_page("У пакета должно быть число сверок больше нуля.")
         with db.connect() as conn:
             billing.save_tariff(conn, int(tariff_id) if tariff_id.isdigit() else None, name, ops, price_kop,
-                                bool(active), sort)
+                                bool(active), sort, kind, inn_limit, days)
         return back("/admin/tariffs")
 
     @app.get("/admin/payments")
@@ -368,6 +386,8 @@ def nav_info(request: Request | None, session_cookie: str) -> dict[str, Any] | N
     with db.connect() as conn:
         user_id = db.get_session_user_id(conn, session_id)
         user = db.get_user(conn, user_id) if user_id else None
+        is_admin = bool(user) and staff.is_admin(conn, user["tg_id"])
+        sub = billing.subscription(conn, user["id"]) if user else None
     if not user:
         return None
-    return {"balance": user["balance"], "is_admin": user["tg_id"] in config.ADMIN_TG_IDS}
+    return {"balance": user["balance"], "is_admin": is_admin, "sub": sub}

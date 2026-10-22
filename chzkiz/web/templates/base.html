@@ -17,7 +17,7 @@
     <span class="brand-txt"><b>Сверка КИЗ</b><span>вывод и возврат</span></span>
   </a>
   {% set ni = nav_info(request) if nav_info is defined else none %}
-  <nav class="topnav"><a href="/step1"{% if path.startswith("/step") %} class="on"{% endif %}>Сверка</a>{% if ni %}<a href="/cabinet"{% if path == "/cabinet" %} class="on"{% endif %}>Кабинет</a>{% endif %}<a href="/instrukciya"{% if path == "/instrukciya" %} class="on"{% endif %}>Инструкция</a>{% if ni and ni.is_admin %}<a href="/admin"{% if path.startswith("/admin") %} class="on"{% endif %}>Админка</a>{% endif %}{% if ni %}<a class="bal" href="/cabinet" title="Операций на балансе">{{ ni.balance }} опер.</a>{% endif %}</nav>
+  <nav class="topnav"><a href="/step1"{% if path.startswith("/step") %} class="on"{% endif %}>Сверка</a>{% if ni %}<a href="/cabinet"{% if path == "/cabinet" %} class="on"{% endif %}>Кабинет</a>{% endif %}<a href="/instrukciya"{% if path == "/instrukciya" %} class="on"{% endif %}>Инструкция</a>{% if ni and ni.is_admin %}<a href="/admin"{% if path.startswith("/admin") %} class="on"{% endif %}>Админка</a>{% endif %}{% if ni %}<a class="bal" href="/cabinet" title="{{ 'Безлимит' if ni.sub else 'Сверок на балансе' }}">{% if ni.sub %}Безлимит до {{ ni.sub.ends_at | date }}{% else %}{{ ni.balance | ops }}{% endif %}</a>{% endif %}</nav>
 </div></header>
 <main class="wrap">
 {% if step %}
