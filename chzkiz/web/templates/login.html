@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block content %}
+<form method="post" action="/l/{{ token }}">
+  <p>Вход в панель по ссылке из бота.</p>
+  <button type="submit">Войти</button>
+</form>
+{% endblock %}

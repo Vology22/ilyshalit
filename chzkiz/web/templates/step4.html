@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% set step = 4 %}
+{% macro code_list(key, g, done_word) %}
+<div class="codes" id="codes-{{ key }}">
+  <div class="codes-bar">
+    <span class="sel-count">Выбрано <b id="sel-{{ key }}">{{ g.selected }}</b> из {{ g.total }}</span>
+    <button type="button" class="mini" data-pick="all" data-group="{{ key }}">Выбрать все</button>
+    <button type="button" class="mini" data-pick="none" data-group="{{ key }}">Снять все</button>
+  </div>
+  <div class="codes-list">
+  {% for i in g["items"] %}
+    <label class="code-row {{ i.state }}">
+      <input type="checkbox" class="pick" data-group="{{ key }}" value="{{ i.cis }}"{% if i.checked %} checked{% endif %}{% if i.state in ("done", "processing") %} disabled{% endif %}>
+      <span class="cis">{{ i.cis }}</span>
+      <span class="tag">
+        {%- if i.state == "done" %}{{ done_word }}
+        {%- elif i.state == "processing" %}в обработке
+        {%- elif i.state == "failed" %}ошибка: {{ i.reason or "Честный знак не принял код" }}
+        {%- elif i.no_price %}нет цены
+        {%- elif i.price %}{{ i.price }} руб.{% endif %}
+      </span>
+    </label>
+  {% endfor %}
+  </div>
+</div>
+{% endmacro %}
+{% block content %}
+<style>
+.pg-sec { margin: 20px 0; }
+.pg-sec h2 { margin-top: 0; }
+.codes-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+.codes-bar .sel-count { flex: 1 1 140px; }
+button.mini { padding: 6px 12px; font-size: 13px; margin: 0; background: #fff; color: var(--accent); border: 1px solid var(--accent); box-shadow: none; font-weight: 500; width: auto; }
+button.mini:hover { background: var(--soft); }
+.codes-list { max-height: 260px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; }
+.code-row { display: flex; gap: 8px; align-items: flex-start; padding: 7px 10px; border-bottom: 1px solid var(--line); font-size: 13px; margin: 0; }
+.code-row:last-child { border-bottom: none; }
+.code-row input { margin-top: 2px; flex: none; }
+.code-row .cis { font-family: ui-monospace, Menlo, monospace; overflow-wrap: anywhere; flex: 1 1 auto; min-width: 0; }
+.code-row .tag { flex: 0 1 45%; text-align: right; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.code-row.done .tag { color: var(--ok); }
+.code-row.failed .tag { color: var(--err); }
+.code-row.done .cis, .code-row.processing .cis { color: var(--muted); }
+.done-line { color: var(--ok); margin: 8px 0 0; }
+#mod-block label { display: flex; flex-direction: column; gap: 4px; margin: 10px 0; }
+#mod-block input { width: 100%; max-width: 420px; }
+#mod-block .warn { margin: 8px 0; }
+.cert-label { font-weight: 600; margin: 18px 0 6px; }
+#cert-box select { width: 100%; max-width: 560px; }
+.cert-info { margin-top: 6px; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+.plugin-missing { background: var(--warn-bg); color: var(--warn); border: 1px solid #f3d995; border-radius: 8px; padding: 10px 14px; margin: 0; overflow-wrap: anywhere; }
+.actions { margin-top: 14px; }
+a.btn-link { display: inline-block; padding: 10px 20px; margin: 6px 0; border: 1px solid var(--accent); border-radius: 8px; color: var(--accent); text-decoration: none; font-weight: 500; background: #fff; }
+a.btn-link:hover { background: var(--soft); }
+#btn-both { font-size: 17px; padding: 14px 28px; }
+button.btn-second { background: #fff; color: var(--accent); border: 1px solid var(--accent); box-shadow: none; font-weight: 500; font-size: 14px; padding: 8px 16px; }
+button.btn-second:disabled { background: #f3f4f6; color: var(--muted); border-color: var(--line); }
+#btn-output.is-done, #btn-return.is-done { background: var(--ok-bg); color: var(--ok); border-color: var(--ok); }
+@media (max-width: 600px) {
+  .code-row { flex-wrap: wrap; }
+  .code-row .tag { flex-basis: 100%; text-align: left; padding-left: 26px; }
+  #mod-block input { max-width: none; }
+  a.btn-link { display: block; text-align: center; }
+}
+</style>
+<h1>Шаг 4. Вывод и возврат</h1>
+<p>Готово к выводу: {{ counts.get("output", 0) }}. Готово к возврату: {{ counts.get("return", 0) }}. Отметьте коды галочками: в документ уйдут только они.</p>
+
+{% set go = groups["output"] %}
+{% set gr = groups["return"] %}
+{% if go.total %}
+<section class="pg-sec" id="sec-output">
+  <h2>Вывести из оборота</h2>
+  {{ code_list("output", go, "выведен") }}
+  <p class="done-line" id="done-output"{% if not go.done %} hidden{% endif %}>Выведено: <b>{{ go.done }}</b></p>
+  {% if go.total > go.done %}
+  <p class="hint">В документе цена из отчета, дата вывода сегодняшняя. Коды без цены не выбраны, вывести их нельзя.</p>
+  <div id="mod-block">
+    <label>Место деятельности, код ФИАС
+      <input id="fias" autocomplete="off" size="40" value="{{ fias_saved }}" placeholder="36 знаков, например 0c5b2444-70a0-...">
+    </label>
+    {% if fias_saved %}
+    <p class="hint">Адрес найден автоматически или взят из прошлого вывода. Если он не тот, замените его здесь.</p>
+    {% else %}
+    <p class="warn">Панель не нашла место деятельности сама. Без кода ФИАС вывод не отправить: введите его в поле выше.</p>
+    {% endif %}
+    <p class="hint">Честный знак требует код при выводе товара, проданного через маркетплейс. Где взять: личный кабинет Честного знака, Профиль, Места осуществления деятельности, код ФИАС у адреса склада. Введенный код панель запомнит.</p>
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+
+{% if gr.total %}
+<section class="pg-sec" id="sec-return">
+  <h2>Вернуть в оборот</h2>
+  {{ code_list("return", gr, "возвращен") }}
+  <p class="done-line" id="done-return"{% if not gr.done %} hidden{% endif %}>Возвращено: <b>{{ gr.done }}</b></p>
+</section>
+{% endif %}
+{% if not go.total and not gr.total %}
+<p>Нет кодов, которые нужно вывести или вернуть.</p>
+{% endif %}
+
+<div class="cert-label">Сертификат</div>
+<div id="cert-box"></div>
+<div class="actions">
+  <a class="btn-link" id="preview-link" href="/preview/{{ run_id }}">Посмотреть что изменится</a><br>
+  <button id="btn-both" type="button" onclick="runBoth()" disabled>Вывести {{ go.selected }} и вернуть {{ gr.selected }}</button><br>
+  <button id="btn-output" class="btn-second" type="button" onclick="runDoc('output')" data-done="{{ go.done }}" disabled>Только вывести {{ go.selected }}</button>
+  <button id="btn-return" class="btn-second" type="button" onclick="runDoc('return')" data-done="{{ gr.done }}" disabled>Только вернуть {{ gr.selected }}</button>
+</div>
+{% if output_locked or return_locked %}
+<p class="hint">Документ отправлен, ждем ответа Честного знака.</p>
+{% endif %}
+
+<div id="status-block"></div>
+<p class="hint">Проверить в самом Честном знаке: Документы -> Исходящие -> Обработан успешно.</p>
+
+{% if is_mock %}
+<script src="/static/mock_sign.js"></script>
+{% else %}
+<script src="/static/cadesplugin_api.js?v=0510b"></script>
+<script src="/static/cades_real.js?v=0510b"></script>
+{% endif %}
+<script>
+var RUN_ID = "{{ run_id }}";
+var IS_MOCK = {{ "true" if is_mock else "false" }};
+</script>
+<script src="/static/app.js?v=1310a"></script>
+<script>step4Init(RUN_ID, IS_MOCK, {{ go.selected }}, {{ gr.selected }}, {{ "true" if documents else "false" }});</script>
+{% endblock %}

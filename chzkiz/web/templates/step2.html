@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% set step = 2 %}
+{% block content %}
+<h1>Шаг 2. Вход в Честный знак</h1>
+<p>Закрытый ключ с вашего компьютера никуда не уходит - подпись делает браузер.</p>
+<style>
+.cert-label { font-weight: 600; margin: 14px 0 6px; }
+#cert-list select { width: 100%; max-width: 560px; }
+.cert-info { margin-top: 6px; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+.plugin-missing { background: var(--warn-bg); color: var(--warn); border: 1px solid #f3d995; border-radius: 8px; padding: 10px 14px; margin: 0; overflow-wrap: anywhere; }
+#help-block { overflow-wrap: anywhere; }
+</style>
+<div class="cert-label">Сертификат</div>
+<div id="cert-list">Загружаю список сертификатов...</div>
+{% if not is_mock %}
+<div id="help-block" style="display:none;">
+  <h3>Не удалось загрузить сертификаты</h3>
+  <p>Что нужно сделать:</p>
+  <ol>
+    <li>Установите КриптоПро CSP 5</li>
+    <li>Установите КриптоПро ЭЦП Browser plug-in со страницы <a href="https://www.cryptopro.ru/products/cades/plugin" target="_blank">https://www.cryptopro.ru/products/cades/plugin</a></li>
+    <li>Установите расширение CryptoPro Extension for CAdES Browser Plug-in для Chrome или Яндекс Браузера</li>
+    <li>Вставьте флешку с подписью</li>
+    <li>Перезапустите браузер</li>
+  </ol>
+  <button id="retry-certs-btn">Проверить снова</button>
+</div>
+{% endif %}
+<button id="login-btn" disabled>Войти подписью</button>
+<p id="login-error" class="error"></p>
+
+{% if is_mock %}
+<script src="/static/mock_sign.js"></script>
+{% else %}
+<script src="/static/cadesplugin_api.js?v=0510b"></script>
+<script src="/static/cades_real.js?v=0510b"></script>
+{% endif %}
+<script>
+var RUN_ID = "{{ run_id }}";
+var IS_MOCK = {{ "true" if is_mock else "false" }};
+</script>
+<script src="/static/app.js?v=1310a"></script>
+<script>step2Init(RUN_ID, IS_MOCK);</script>
+{% endblock %}

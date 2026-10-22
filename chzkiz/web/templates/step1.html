@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% set step = 1 %}
+{% block content %}
+<h1>Шаг 1. Откуда брать продажи</h1>
+<form method="post" action="/step1" enctype="multipart/form-data" id="step1-form">
+  <label class="radio">
+    <input type="radio" name="source" value="api" checked onclick="toggleSource()"> Через API WB
+  </label>
+  <label class="radio">
+    <input type="radio" name="source" value="excel" onclick="toggleSource()"> Через файл Excel
+  </label>
+
+  <div id="api-block" class="block">
+    <label>Склад: <input type="radio" name="wh" checked disabled> FBS
+      <input type="radio" name="wh" disabled> FBO (пока не поддержан)</label>
+    <label>Период с <input type="date" name="date_from" value="{{ date_from }}"></label>
+    <label>по <input type="date" name="date_to" value="{{ date_to }}"></label>
+    <div>
+      <button type="button" class="tab" data-end="{{ date_to }}" data-days="30" onclick="setPeriod(this)">Последний месяц</button>
+      <button type="button" class="tab" data-end="{{ date_to }}" data-days="92" onclick="setPeriod(this)">Три месяца</button>
+    </div>
+    <p class="hint">Минимальный период сверки 30 дней: продажа или возврат часто относятся к заказу, который создан раньше</p>
+  </div>
+
+  <div id="excel-block" class="block" style="display:none">
+    <label>Архив сборочных заданий (.xlsx или .zip): <input type="file" name="file" accept=".xlsx,.zip" multiple data-list="list-file"></label>
+    <ul id="list-file" class="file-list"></ul>
+    <label>Финансовые отчеты WB (.xlsx или .zip, можно несколько сразу): <input type="file" name="file_fin" accept=".xlsx,.zip" multiple data-list="list-fin"></label>
+    <ul id="list-fin" class="file-list"></ul>
+  </div>
+
+  <label>Товарная группа:
+    <select name="pg">
+      {% for value, label in pg_options.items() %}
+      <option value="{{ value }}" {% if value == pg %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </label>
+
+  <button type="submit" id="step1-submit">Продолжить</button>
+  <p id="api-wait" style="display:none">Загружаю данные из WB, это до 2 минут</p>
+</form>
+<script>
+function toggleSource() {
+  var api = document.querySelector('input[name=source][value=api]').checked;
+  document.getElementById('api-block').style.display = api ? '' : 'none';
+  document.getElementById('excel-block').style.display = api ? 'none' : '';
+}
+function periodStart(end, days) {
+  var p = end.split('-');
+  var t = Date.UTC(+p[0], +p[1] - 1, +p[2]) - (days - 1) * 86400000;
+  return new Date(t).toISOString().slice(0, 10);
+}
+function setPeriod(btn) {
+  var end = btn.dataset.end;
+  document.querySelector('input[name=date_to]').value = end;
+  document.querySelector('input[name=date_from]').value = periodStart(end, +btn.dataset.days);
+}
+var picked = {};
+function renderList(input) {
+  var list = document.getElementById(input.dataset.list);
+  var files = picked[input.name] || [];
+  var dt = new DataTransfer();
+  files.forEach(function (f) { dt.items.add(f); });
+  input.files = dt.files;
+  list.innerHTML = '';
+  files.forEach(function (f, i) {
+    var li = document.createElement('li');
+    li.appendChild(document.createTextNode(f.name + ' '));
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = 'убрать';
+    btn.addEventListener('click', function () {
+      files.splice(i, 1);
+      renderList(input);
+    });
+    li.appendChild(btn);
+    list.appendChild(li);
+  });
+}
+document.querySelectorAll('input[type=file][data-list]').forEach(function (input) {
+  input.addEventListener('change', function () {
+    var files = picked[input.name] || [];
+    Array.prototype.forEach.call(input.files, function (f) {
+      if (!files.some(function (x) { return x.name === f.name && x.size === f.size; })) files.push(f);
+    });
+    picked[input.name] = files;
+    renderList(input);
+  });
+});
+document.getElementById('step1-form').addEventListener('submit', function (e) {
+  if (!document.querySelector('input[name=source][value=api]').checked) return;
+  var btn = document.getElementById('step1-submit');
+  if (btn.disabled) { e.preventDefault(); return; }
+  btn.disabled = true;
+  document.getElementById('api-wait').style.display = '';
+});
+window.addEventListener('pageshow', function () {
+  document.getElementById('step1-submit').disabled = false;
+  document.getElementById('api-wait').style.display = 'none';
+});
+</script>
+{% endblock %}

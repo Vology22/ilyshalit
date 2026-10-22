@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Сверка КИЗ</title>
+<link rel="stylesheet" href="/static/style.css?v=1011c">
+</head>
+<body>
+{% set path = request.url.path if request else "" %}
+<header class="topbar"><div class="topbar-in"><a class="brand" href="/step1">Сверка, вывод и возврат КИЗ</a><nav class="topnav"><a href="/step1"{% if path.startswith("/step") %} class="on"{% endif %}>Сверка</a><a href="/instrukciya"{% if path == "/instrukciya" %} class="on"{% endif %}>Инструкция</a></nav></div></header>
+<main class="wrap">
+{% if step %}
+<ol class="steps">
+  {% for n, name in [(1, "Загрузка"), (2, "Вход в ЧЗ"), (3, "Сверка"), (4, "Документы")] %}
+  <li class="{{ 'cur' if n == step else ('done' if n < step else '') }}"><span class="num">{{ n }}</span><span class="txt">{{ name }}</span></li>
+  {% endfor %}
+</ol>
+<p class="restart"><a href="/step1">Начать заново</a></p>
+{% endif %}
+<div class="card">
+{% block content %}{% endblock %}
+</div>
+</main>
+</body>
+</html>

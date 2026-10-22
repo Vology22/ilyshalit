@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% set step = 3 %}
+{% block content %}
+<h1>Шаг 3. Сверка</h1>
+{% for w in warnings %}
+<p class="warn">{{ w }}</p>
+{% endfor %}
+<p>ИНН владельца: {{ our_inn or "-" }}. Всего кодов: {{ total }}{% if istochniki %} ({{ istochniki }}){% endif %}.</p>
+{% if skipped_files %}
+<p class="warn">Пропущены файлы без колонки с КИЗ, это не отчеты о реализации: {{ skipped_files }}.</p>
+{% endif %}
+{% if meta_failed_count %}
+<p class="warn">Не удалось получить КИЗ: {{ meta_failed_count }} заказов{% if bez_wb %}, по ним код дает WB по номеру задания, а токен WB не подключен{% endif %}.</p>
+{% endif %}
+{% if bez_wb and iz_arhiva %}
+<p class="warn">Токен WB не подключен, поэтому статусы заданий взяты из вашего файла архива, а не из WB: отказ покупателя после выгрузки файла в сверку не попадет. Сверка идет по Честному знаку и по вашим файлам.</p>
+{% endif %}
+{% if files_info %}
+<div class="block">
+  {% if files_info.files %}
+  <p>Приняты файлы:</p>
+  <ul>
+    {% for f in files_info.files %}
+    <li>{{ f.name }}: {{ "архив заданий" if f.kind == "archive" else "финансовый отчет" }}, строк {{ f.rows }}</li>
+    {% endfor %}
+  </ul>
+  <p>Строк в отчетах: {{ files_info.rows }}. Уникальных кодов для сверки: {{ files_info.unique }}</p>
+  {% else %}
+  <p>Уникальных кодов для сверки: {{ files_info.unique }}</p>
+  {% endif %}
+</div>
+{% endif %}
+<div class="summary">
+  {% for g, label in group_labels.items() %}
+  <div class="metric"><span class="n">{{ counts.get(g, 0) }}</span><span class="l">{{ label }}</span></div>
+  {% endfor %}
+</div>
+
+<p>
+  <a href="/step4/{{ run_id }}"><button>Дальше: вывод и возврат</button></a>
+  <a href="/preview/{{ run_id }}" id="preview-link"><button type="button" style="background:#fff;color:var(--accent)">Посмотреть что изменится</button></a>
+</p>
+
+<div class="tabs">
+  {% for g, label in group_labels.items() %}
+  <button class="tab" data-group="{{ g }}" onclick="filterGroup('{{ g }}')">{{ label }} ({{ counts.get(g, 0) }})</button>
+  {% endfor %}
+  <button class="tab" data-group="" onclick="filterGroup('')">Все</button>
+</div>
+
+<p class="scroll-hint">Таблицу можно листать вбок</p>
+<div class="table-wrap">
+<table id="items-table">
+  <thead><tr><th>Код</th><th>ИНН владельца</th><th>Операция</th><th>Дата</th><th>Цена, р.</th><th>Статус в ЧЗ</th><th>Группа</th><th>Причина</th></tr></thead>
+  <tbody>
+  {% for r in rows %}
+  <tr data-group="{{ r.group_name }}">
+    <td>{{ r.cis_norm }}</td>
+    <td>{{ r.owner_inn or "-" }}</td>
+    <td>{{ "Отказ" if r.reason in ("otkaz_v_oborote", "otkaz_vyveden") else ("Продажа" if r.op == "sale" else "Возврат") }}</td>
+    <td>{{ r.date[8:10] ~ "." ~ r.date[5:7] ~ "." ~ r.date[:4] if r.date and r.date|length == 10 else (r.date or "-") }}</td>
+    <td>{{ "%.2f"|format(r.product_cost / 100) if r.product_cost else "-" }}</td>
+    <td>{{ chz_labels.get(r.chz_status, r.chz_status) if r.chz_status else "-" }}</td>
+    <td>{{ group_labels.get(r.group_name, r.group_name) }}</td>
+    <td>{{ reason_labels.get(r.reason, r.reason) }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<a href="/step4/{{ run_id }}"><button>Дальше: вывод и возврат</button></a>
+<script>
+function filterGroup(g) {
+  document.querySelectorAll('#items-table tbody tr').forEach(function(tr) {
+    tr.style.display = (!g || tr.dataset.group === g) ? '' : 'none';
+  });
+}
+</script>
+{% endblock %}
