@@ -19,13 +19,40 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from .. import chz_api, chz_docs, chz_errors, config, db, excel_in, excel_out, kiz, sverka, wb_api
+from .. import billing, chz_api, chz_docs, chz_errors, config, db, excel_in, excel_out, kiz, sverka, wb_api
 from ..chz_mock import router as mock_router
+from . import account
 
 SESSION_COOKIE = "sid"
 WEB_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(WEB_DIR / "templates"))
 templates.env.globals["chz_labels"] = excel_out.CHZ_STATUS_LABELS
+templates.env.globals["nav_info"] = lambda request: account.nav_info(request, SESSION_COOKIE)
+
+
+def _dt(ts: float | None) -> str:
+    """unix-время -> дата и время по Москве для таблиц кабинета и админки."""
+    if not ts:
+        return "-"
+    return datetime.fromtimestamp(ts, wb_api.MSK).strftime("%d.%m.%Y %H:%M")
+
+
+templates.env.filters["dt"] = _dt
+
+
+def _ops(n: int) -> str:
+    """3 операции, 5 операций, 21 операция."""
+    n = int(n or 0)
+    if n % 10 == 1 and n % 100 != 11:
+        word = "операция"
+    elif 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+        word = "операции"
+    else:
+        word = "операций"
+    return f"{n} {word}"
+
+
+templates.env.filters["ops"] = _ops
 
 
 FIAS_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -57,24 +84,24 @@ def create_app() -> FastAPI:
 
     # GET ссылку не гасит: предпросмотр ссылок в чатах открывает ее раньше человека
     @app.get("/l/{token}", response_model=None)
-    async def login_link_page(request: Request, token: str) -> HTMLResponse | RedirectResponse:
+    async def login_link_page(request: Request, token: str, next: str = "") -> HTMLResponse | RedirectResponse:
         with db.connect() as conn:
             if db.peek_login_token(conn, token) is None:
                 if _has_live_session(conn, request):
-                    return RedirectResponse(url="/step1", status_code=302)
+                    return RedirectResponse(url=_safe_next(next), status_code=302)
                 return _error_page("Ссылка недействительна или уже использована. Запросите новую в боте, /out.")
-        return templates.TemplateResponse(request, "login.html", {"token": token})
+        return templates.TemplateResponse(request, "login.html", {"token": token, "next": _safe_next(next)})
 
     @app.post("/l/{token}", response_model=None)
-    async def login_link(request: Request, token: str) -> HTMLResponse | RedirectResponse:
+    async def login_link(request: Request, token: str, next: str = "") -> HTMLResponse | RedirectResponse:
         with db.connect() as conn:
             user_id = db.consume_login_token(conn, token)
             if user_id is None:
                 if _has_live_session(conn, request):
-                    return RedirectResponse(url="/step1", status_code=303)
+                    return RedirectResponse(url=_safe_next(next), status_code=303)
                 return _error_page("Ссылка недействительна или уже использована. Запросите новую в боте, /out.")
             session_id = db.create_session(conn, user_id)
-        resp = RedirectResponse(url="/step1", status_code=303)
+        resp = RedirectResponse(url=_safe_next(next), status_code=303)
         resp.set_cookie(
             SESSION_COOKIE,
             session_id,
@@ -490,6 +517,9 @@ def create_app() -> FastAPI:
         with db.connect() as conn:
             run = _get_run_or_404(user_id, run_id, conn)
             rows = [dict(r) for r in db.get_items(conn, run_id)]
+            # проверяем до подписи, чтобы не заставлять подписывать документ, который не уйдет
+            if billing.balance(conn, user_id) < 1:
+                raise HTTPException(status_code=402, detail=billing.NOT_ENOUGH)
         in_group = [r for r in rows if r["group_name"] == group]
         if not in_group:
             raise HTTPException(status_code=400, detail="Нет кодов в этой группе.")
@@ -594,8 +624,15 @@ def create_app() -> FastAPI:
         if not claimed:
             # двойной клик или вторая вкладка: ждем исход первой отправки, второй раз в ЧЗ не шлем
             return await _wait_sent(body["doc_id"], run_id)
+        charged_now = sent_ok = False
         try:
             _same_document_or_409(body, fresh)
+            try:
+                with db.connect() as conn:
+                    kind = "вывод" if body["chz_type"] == chz_api.DOC_TYPE_RECEIPT else "возврат"
+                    charged_now = billing.charge_document(conn, user_id, body["doc_id"], f"Документ: {kind}")
+            except billing.NotEnoughOps:
+                raise HTTPException(status_code=402, detail=billing.NOT_ENOUGH)
             client = chz_client(token)
             pg = (user["pg"] if user else None) or config.DEFAULT_PG
             try:
@@ -633,9 +670,12 @@ def create_app() -> FastAPI:
                 )
             with db.connect() as conn:
                 db.set_document_chz_id(conn, body["doc_id"], chz_doc_id)
+            sent_ok = True
             return {"ok": True, "chz_doc_id": chz_doc_id}
         finally:
             with db.connect() as conn:
+                if charged_now and not sent_ok:
+                    billing.refund_document(conn, user_id, body["doc_id"], "Документ не ушел в Честный знак")
                 db.unclaim_document(conn, body["doc_id"], doc["status"])
 
     @app.get("/step4/{run_id}/status")
@@ -704,6 +744,8 @@ def create_app() -> FastAPI:
     @app.get("/")
     async def root() -> RedirectResponse:
         return RedirectResponse(url="/step1", status_code=303)
+
+    account.register(app, templates, _require_user, _error_page)
 
     @app.exception_handler(StarletteHTTPException)
     async def net_vhoda(request: Request, exc: StarletteHTTPException) -> Any:
@@ -961,6 +1003,14 @@ def _get_run_or_404(user_id: int, run_id: str, conn=None):
         return run
 
 
+# Куда можно вести после входа по ссылке: только свои страницы, без внешних адресов.
+LOGIN_NEXT = ("/step1", "/cabinet", "/admin")
+
+
+def _safe_next(value: str) -> str:
+    return value if value in LOGIN_NEXT else "/step1"
+
+
 def _has_live_session(conn, request: Request) -> bool:
     session_id = request.cookies.get(SESSION_COOKIE)
     return bool(session_id) and db.get_session_user_id(conn, session_id) is not None
@@ -1061,6 +1111,9 @@ async def _refresh_document(client: Any, d: dict[str, Any], known_only: bool = F
         else:
             db.set_document_status(conn, d["id"], status, errors)
         db.mark_document_done(conn, d["run_id"], d["chz_doc_id"])
+        owner = conn.execute("SELECT user_id FROM runs WHERE id = ?", (d["run_id"],)).fetchone()
+        if owner:
+            billing.settle_document(conn, owner["user_id"], d["id"], d["chz_doc_id"])
     return True
 
 

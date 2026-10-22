@@ -17,6 +17,34 @@ WEB_PORT = int(os.environ.get("CHZ_KIZ_WEB_PORT", "8140"))
 DB_PATH = os.environ.get("CHZ_KIZ_DB", str(BASE_DIR / "data" / "chz_kiz.db"))
 REPORTS_DIR = os.environ.get("CHZ_KIZ_REPORTS", str(BASE_DIR / "data" / "reports"))
 
+# --- биллинг ---
+# Операция = один документ вывода или возврата, принятый Честным знаком.
+FREE_OPS = int(os.environ.get("CHZ_FREE_OPS", "3"))  # бесплатно при регистрации
+REF_SELLER_BONUS_OPS = 3  # селлеру/менеджеру за приглашенного с первой оплатой
+REF_FF_PERCENT = 20  # фулфилменту от каждой оплаты приглашенного, до вычета комиссий
+ADMIN_TG_IDS = {int(x) for x in os.environ.get("ADMIN_TG_IDS", "").replace(",", " ").split() if x.isdigit()}
+BOT_USERNAME = os.environ.get("BOT_USERNAME", "").lstrip("@")
+# stub - тестовая оплата без денег, yookassa - ЮKassa. Пусто - оплата выключена: заглушка
+# не должна включиться на проде сама по себе.
+PAYMENT_PROVIDER = os.environ.get("PAYMENT_PROVIDER", "").strip().lower()
+YOOKASSA_SHOP_ID = os.environ.get("YOOKASSA_SHOP_ID", "")
+YOOKASSA_SECRET_KEY = os.environ.get("YOOKASSA_SECRET_KEY", "")
+# Чек по 54-ФЗ через ЮKassa: нужен email покупателя. vat_code 1 - без НДС.
+YOOKASSA_RECEIPT = os.environ.get("YOOKASSA_RECEIPT", "").strip() == "1"
+YOOKASSA_VAT_CODE = int(os.environ.get("YOOKASSA_VAT_CODE", "1"))
+
+CATEGORIES = {"seller": "Селлер / менеджер", "fulfillment": "Фулфилмент"}
+
+# --- юридические документы и поддержка (требование платежной системы и банка) ---
+SERVICE_NAME = os.environ.get("SERVICE_NAME", "Сверка КИЗ")
+OPERATOR_NAME = os.environ.get("OPERATOR_NAME", "")  # например: ИП Иванов Иван Иванович
+OPERATOR_INN = os.environ.get("OPERATOR_INN", "")
+OPERATOR_OGRN = os.environ.get("OPERATOR_OGRN", "")  # ОГРНИП; у самозанятого пусто
+SUPPORT_EMAIL = os.environ.get("SUPPORT_EMAIL", "")
+SUPPORT_TG = os.environ.get("SUPPORT_TG", "").lstrip("@")  # личный юзернейм, не группа
+SUPPORT_HOURS = os.environ.get("SUPPORT_HOURS", "ежедневно с 10:00 до 20:00 по Москве")
+DOCS_DATE = "22.10.2026"  # дата редакции политики и соглашения: менять при каждой правке текста
+
 LOGIN_LINK_TTL_MIN = 15
 SESSION_TTL_HOURS = 720
 UPLOAD_MAX_BYTES = 20 * 1024 * 1024
@@ -86,6 +114,10 @@ def check_mode() -> None:
         raise RuntimeError(
             f"CHZ_MODE должен быть mock или real, сейчас: {CHZ_MODE!r}. Проверьте, что .env загружен."
         )
+
+
+def payments_enabled() -> bool:
+    return PAYMENT_PROVIDER in ("stub", "yookassa")
 
 
 def cookie_secure() -> bool:

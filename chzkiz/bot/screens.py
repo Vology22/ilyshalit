@@ -153,3 +153,47 @@ def nofl_text() -> str:
         "и нажмите кнопку там. Или перешлите следующее сообщение на тот компьютер, "
         "ссылка в нем работает 15 минут."
     )
+
+
+def category_screen() -> tuple[str, InlineKeyboardMarkup]:
+    text = (
+        "Кто вы? Выберите один раз, от этого зависит реферальная программа:\n\n"
+        f"🛍 Селлер или менеджер - {config.REF_SELLER_BONUS_OPS} операции за каждого приглашенного, "
+        "который оплатит тариф\n"
+        f"📦 Фулфилмент - {config.REF_FF_PERCENT}% от оплат приглашенных клиентов, выплаты раз в неделю"
+    )
+    return text, _kb(
+        [_cb("🛍 Селлер / менеджер", "cat:seller")],
+        [_cb("📦 Фулфилмент", "cat:fulfillment")],
+    )
+
+
+def cabinet_screen(link: str, balance: int) -> tuple[str, InlineKeyboardMarkup]:
+    text = (
+        f"На балансе {balance} операций. Одна операция - один документ вывода или возврата, "
+        "принятый Честным знаком.\n\n"
+        "В личном кабинете тарифы, история и реферальная ссылка. Ссылка разовая и работает 15 минут."
+    )
+    return text, _kb([InlineKeyboardButton(text="💳 Личный кабинет", url=link)])
+
+
+def info_screen() -> tuple[str, InlineKeyboardMarkup]:
+    contacts = []
+    if config.SUPPORT_TG:
+        contacts.append(f"Telegram: @{config.SUPPORT_TG}")
+    if config.SUPPORT_EMAIL:
+        contacts.append(f"Email: {config.SUPPORT_EMAIL}")
+    text = (
+        "Тарифы, документы и поддержка\n\n"
+        "Одна операция - один документ вывода или возврата в Честном знаке. "
+        f"При регистрации {config.FREE_OPS} операции бесплатно.\n\n"
+        "Поддержка:\n" + ("\n".join(contacts) or "контакты скоро появятся") + "\n"
+        f"Время работы: {config.SUPPORT_HOURS}"
+    )
+    url = config.PUBLIC_URL
+    return text, _kb(
+        [InlineKeyboardButton(text="💰 Тарифы и цены", url=f"{url}/tariffs")],
+        [InlineKeyboardButton(text="📄 Пользовательское соглашение", url=f"{url}/terms")],
+        [InlineKeyboardButton(text="🔒 Политика конфиденциальности", url=f"{url}/privacy")],
+        [InlineKeyboardButton(text="💬 Поддержка", url=f"{url}/support")],
+    )

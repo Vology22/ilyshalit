@@ -7,3 +7,5 @@ __pycache__/
 .venv/
 venv/
 .pytest_cache/
+*.db-wal
+*.db-shm

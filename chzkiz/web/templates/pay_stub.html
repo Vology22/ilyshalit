@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="login-box">
+  <h1>Тестовая оплата</h1>
+  <p class="warn">Это заглушка платежного сервиса: деньги не списываются. На сервере с настоящей оплатой здесь будет страница ЮKassa.</p>
+  <p>Тариф <b>{{ p.tariff_name }}</b>: {{ p.ops }} операций за <b>{{ rub(p.amount_kop) }}</b></p>
+  {% if p.status == "pending" %}
+  <form method="post" action="/pay/stub/{{ p.id }}">
+    <button type="submit" name="action" value="pay">Оплатить</button>
+    <button type="submit" name="action" value="cancel" class="tab">Отменить</button>
+  </form>
+  {% else %}
+  <p>Платеж уже {{ "оплачен" if p.status == "succeeded" else "отменен" }}.</p>
+  <p><a href="/cabinet">Вернуться в кабинет</a></p>
+  {% endif %}
+</div>
+{% endblock %}

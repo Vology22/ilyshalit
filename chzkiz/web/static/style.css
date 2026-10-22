@@ -157,3 +157,58 @@ tbody tr:last-child td { border-bottom: none; }
 button.mini { min-height: 34px; border-radius: 999px; padding: 5px 14px; }
 button.btn-second { border-radius: 10px; }
 a.btn-link { border-radius: 10px; }
+
+/* Баланс в шапке */
+.topbar .topnav a.bal { background: rgba(255, 255, 255, .92); color: var(--head); font-weight: 600; }
+.topbar .topnav a.bal:hover { background: #fff; }
+
+/* Кабинет и админка */
+.notice { background: var(--ok-bg); color: var(--ok); border: 1px solid #b7e4c7; border-radius: 10px; padding: 12px 16px; }
+.kpis { display: flex; gap: 12px; flex-wrap: wrap; margin: 14px 0; }
+.kpi { flex: 1 1 160px; background: #fff; border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 18px; }
+.kpi .n { display: block; font-size: 22px; font-weight: 700; line-height: 1.25; }
+.kpi .l { font-size: 13px; color: var(--muted); }
+.kpi-main { background: var(--accent); border-color: var(--accent); color: #fff; }
+.kpi-main .l { color: rgba(255, 255, 255, .8); }
+.kpis.small .kpi .n { font-size: 18px; }
+.tariffs { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin: 12px 0; }
+.tariff { border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; background: var(--soft-2); display: flex; flex-direction: column; gap: 4px; }
+.tariff .t-name { font-weight: 600; color: var(--muted); text-transform: uppercase; font-size: 13px; letter-spacing: .04em; }
+.tariff .t-ops { font-size: 28px; font-weight: 700; }
+.tariff .t-ops span { font-size: 15px; font-weight: 500; color: var(--muted); }
+.tariff .t-price { font-size: 20px; font-weight: 600; color: var(--accent); }
+.tariff button { width: 100%; margin: 10px 0 0; }
+.ref-link { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.ref-link input { flex: 1 1 280px; font-family: ui-monospace, Menlo, monospace; font-size: 14px; }
+.ref-link button { margin: 0; }
+.profile label { max-width: 560px; }
+.profile input, .profile textarea { display: block; width: 100%; margin-top: 6px; }
+textarea { font: inherit; padding: 9px 12px; border: 1px solid var(--field); border-radius: 10px; resize: vertical; }
+textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--soft); }
+.cat-pick { display: flex; gap: 8px; flex-wrap: wrap; }
+td.plus { color: var(--ok); font-weight: 600; }
+td.minus { color: var(--err); font-weight: 600; }
+.subnav { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 18px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.subnav a { padding: 7px 14px; border-radius: 999px; text-decoration: none; color: var(--text); background: var(--bg); font-size: 14px; font-weight: 500; }
+.subnav a.on { background: var(--accent); color: #fff; }
+.search { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.search input { flex: 1 1 260px; }
+.search button { margin: 0; }
+form.inline { display: flex; gap: 6px; align-items: center; margin: 0; }
+td input, td select { min-height: 34px; padding: 5px 8px; font-size: 13px; }
+td input.num { width: 90px; }
+td input.note { width: 130px; }
+td.wrap-cell { white-space: pre-wrap; min-width: 200px; max-width: 320px; }
+tr.new-row td { background: var(--soft-2); }
+@media (max-width: 600px) {
+  .tariffs { grid-template-columns: 1fr; }
+  .ref-link button, .search button { width: auto; }
+  td button.mini { width: auto; }
+}
+
+/* Документы */
+.doc { max-width: 820px; }
+.doc h2 { font-size: 18px; margin-top: 26px; }
+.doc h2::before { height: 18px; }
+.doc p, .doc li { line-height: 1.6; }
+.foot-in { gap: 10px 24px; }

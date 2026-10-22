@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Тарифы</h1>
+<p>Оплачиваются операции. <b>Одна операция - один документ</b> вывода из оборота или возврата в оборот, отправленный в Честный знак, сколько бы кодов в нем ни было. Операции не сгорают. Если Честный знак отклонит документ целиком, операция вернется на баланс.</p>
+<p class="notice">При регистрации - {{ d.free_ops }} операции бесплатно.</p>
+<div class="tariffs">
+  {% for t in tariffs %}
+  <form class="tariff" method="post" action="/cabinet/buy">
+    <div class="t-name">{{ t.name }}</div>
+    <div class="t-ops">{{ t.ops }} <span>операций</span></div>
+    <div class="t-price">{{ rub(t.price_kop) }}</div>
+    <div class="hint">{{ rub(t.price_kop // t.ops) }} за операцию</div>
+    <input type="hidden" name="tariff_id" value="{{ t.id }}">
+    <button type="submit">Купить</button>
+  </form>
+  {% endfor %}
+</div>
+<p class="hint">Цены в рублях. Чтобы купить, войдите через бота{% if d.bot %} <a href="https://t.me/{{ d.bot }}">@{{ d.bot }}</a>{% endif %}: тариф оплачивается в личном кабинете. Условия возврата - в <a href="/terms">пользовательском соглашении</a>.</p>
+{% endblock %}

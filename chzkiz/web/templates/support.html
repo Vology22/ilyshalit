@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="doc">
+<h1>Поддержка и контакты</h1>
+<p>Отвечаем на вопросы по сверке, оплате, возвратам и реферальной программе. Время работы: {{ d.hours }}.</p>
+<div class="kpis">
+  <div class="kpi"><span class="l">Telegram</span><span class="n">{% if d.tg %}<a href="https://t.me/{{ d.tg }}">@{{ d.tg }}</a>{% else %}[заполнить]{% endif %}</span></div>
+  <div class="kpi"><span class="l">Email</span><span class="n">{% if d.email %}<a href="mailto:{{ d.email }}">{{ d.email }}</a>{% else %}[заполнить]{% endif %}</span></div>
+</div>
+<p>При обращении укажите ваш Telegram ID или номер из личного кабинета и опишите, что случилось. По сверке пришлите номер документа из Честного знака, если он есть.</p>
+<h2>Исполнитель</h2>
+<p>{{ d.operator }}<br>ИНН {{ d.inn }}{% if d.ogrn %}<br>ОГРНИП {{ d.ogrn }}{% endif %}</p>
+<p><a href="/tariffs">Тарифы</a> · <a href="/terms">Пользовательское соглашение</a> · <a href="/privacy">Политика конфиденциальности</a></p>
+</div>
+{% endblock %}

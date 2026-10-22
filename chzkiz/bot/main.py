@@ -7,7 +7,7 @@ import re
 
 import httpx
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -15,7 +15,7 @@ from aiogram.types import (
     BotCommand, CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message,
 )
 
-from .. import config, crypto, db, wb_api
+from .. import billing, config, crypto, db, wb_api
 from . import screens
 
 logging.basicConfig(level=logging.INFO)
@@ -24,6 +24,8 @@ log = logging.getLogger("chzkiz.bot")
 COMMANDS = [
     ("start", "начать, подключить WB по API"),
     ("out", "сделать сверку КИЗ"),
+    ("cabinet", "баланс, тарифы и рефералы"),
+    ("info", "тарифы, документы, поддержка"),
     ("instrukciya", "пошаговая инструкция"),
     ("help", "что умеет бот"),
 ]
@@ -110,11 +112,19 @@ class WaitKey(StatesGroup):
     key = State()
 
 
-def _login_link(tg_id: int) -> str:
+def _login_link(tg_id: int, next_page: str = "") -> str:
     with db.connect() as conn:
         user = db.get_or_create_user(conn, tg_id)
         token = db.create_login_token(conn, user["id"])
-    return f"{config.PUBLIC_URL}/l/{token}"
+    tail = f"?next={next_page}" if next_page else ""
+    return f"{config.PUBLIC_URL}/l/{token}{tail}"
+
+
+def _cabinet(tg_id: int) -> tuple[str, InlineKeyboardMarkup]:
+    link = _login_link(tg_id, "/cabinet")
+    with db.connect() as conn:
+        user = db.get_or_create_user(conn, tg_id)
+    return screens.cabinet_screen(link, user["balance"])
 
 
 def _has_wb_key(tg_id: int) -> bool:
@@ -133,11 +143,47 @@ def build_dispatcher() -> Dispatcher:
     dp = Dispatcher(storage=MemoryStorage())
 
     @dp.message(CommandStart())
-    async def on_start(message: Message, state: FSMContext) -> None:
+    async def on_start(message: Message, state: FSMContext, command: CommandObject) -> None:
         await state.clear()
+        payload = (command.args or "").strip()
+        # t.me/бот?start=ref_код - пригласивший закрепляется только при первой регистрации
+        ref_code = payload[4:] if payload.startswith("ref_") else ""
         with db.connect() as conn:
-            db.get_or_create_user(conn, message.from_user.id)
+            user = db.get_or_create_user(conn, message.from_user.id, ref_code)
         text, kb = screens.start_screen()
+        await message.answer(text, reply_markup=kb)
+        if not user["category"]:
+            text, kb = screens.category_screen()
+            await message.answer(text, reply_markup=kb)
+
+    @dp.callback_query(F.data.startswith("cat:"))
+    async def on_category(query: CallbackQuery) -> None:
+        await query.answer()
+        category = query.data.split(":", 1)[1]
+        with db.connect() as conn:
+            user = db.get_or_create_user(conn, query.from_user.id)
+            changed = billing.set_category(conn, user["id"], category)
+            user = db.get_user(conn, user["id"])
+        if query.message is None:
+            return
+        label = config.CATEGORIES.get(user["category"], "")
+        if changed:
+            head = f"Готово: {label}."
+        else:
+            head = f"Категория уже выбрана: {label}. Сменить ее можно через поддержку."
+        text, kb = _cabinet(query.from_user.id)
+        await query.message.answer(f"{head}\n\n{text}", reply_markup=kb)
+
+    @dp.message(Command("info"))
+    async def on_info(message: Message, state: FSMContext) -> None:
+        await state.clear()
+        text, kb = screens.info_screen()
+        await message.answer(text, reply_markup=kb)
+
+    @dp.message(Command("cabinet"))
+    async def on_cabinet(message: Message, state: FSMContext) -> None:
+        await state.clear()
+        text, kb = _cabinet(message.from_user.id)
         await message.answer(text, reply_markup=kb)
 
     @dp.message(WaitKey.key, F.text, ~F.text.startswith("/"))
@@ -239,6 +285,8 @@ def build_dispatcher() -> Dispatcher:
         await state.clear()
         await message.answer(
             "/start - начать, подключить WB по API\n/out - сделать сверку КИЗ\n"
+            "/cabinet - баланс, тарифы и реферальная ссылка\n"
+            "/info - тарифы, документы и контакты поддержки\n"
             "/instrukciya - пошаговая инструкция\n"
             "Кнопка Видео по сверке есть в /out, там короткие ролики по шагам."
         )

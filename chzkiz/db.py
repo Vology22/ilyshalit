@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import secrets
 import sqlite3
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -71,22 +72,101 @@ CREATE TABLE IF NOT EXISTS documents (
     codes_json TEXT NOT NULL,
     errors TEXT
 );
+
+-- Движение операций: каждое начисление и списание, баланс после него.
+CREATE TABLE IF NOT EXISTS ledger (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    delta INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    ref TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    balance_after INTEGER NOT NULL,
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ledger_user ON ledger (user_id, id);
+
+CREATE TABLE IF NOT EXISTS tariffs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    ops INTEGER NOT NULL,
+    price_kop INTEGER NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    sort INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS payments (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    tariff_id INTEGER,
+    tariff_name TEXT NOT NULL,
+    ops INTEGER NOT NULL,
+    amount_kop INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    provider TEXT NOT NULL,
+    provider_id TEXT NOT NULL DEFAULT '',
+    confirmation_url TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL,
+    paid_at REAL
+);
+CREATE INDEX IF NOT EXISTS payments_user ON payments (user_id, created_at);
+
+-- Реферальные начисления: ops - операции селлеру (сразу на баланс), money - деньги фулфилменту
+-- (accrued, пока админ не отметит выплату).
+CREATE TABLE IF NOT EXISTS ref_rewards (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    referrer_id INTEGER NOT NULL,
+    referee_id INTEGER NOT NULL,
+    payment_id TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL,
+    ops INTEGER NOT NULL DEFAULT 0,
+    amount_kop INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    paid_at REAL
+);
+CREATE INDEX IF NOT EXISTS ref_rewards_referrer ON ref_rewards (referrer_id, status);
 """
+
+
+# Сколько ждать чужую запись, прежде чем отдать "database is locked".
+BUSY_TIMEOUT_SEC = 30.0
+
+# Файлы баз, где схема уже проверена этим процессом. Раньше схема (а это запись)
+# прогонялась на каждом соединении, и параллельные запросы блокировали друг друга.
+_ready_paths: set[str] = set()
+_schema_lock = threading.Lock()
 
 
 def get_conn(db_path: str | None = None) -> sqlite3.Connection:
     path = db_path or config.DB_PATH
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, check_same_thread=False)
+    conn = sqlite3.connect(path, timeout=BUSY_TIMEOUT_SEC, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # В WAL синхронизации NORMAL достаточно: при сбое питания теряется последняя транзакция, не база.
+    conn.execute("PRAGMA synchronous = NORMAL")
     return conn
 
 
 def init_schema(conn: sqlite3.Connection) -> None:
+    # WAL: чтения не ждут записи. Режим хранится в самом файле базы.
+    conn.execute("PRAGMA journal_mode = WAL")
     conn.executescript(SCHEMA)
     _migrate(conn)
     conn.commit()
+
+
+def _ensure_schema(conn: sqlite3.Connection, path: str) -> None:
+    key = str(Path(path).resolve())
+    # Под замком: соседний поток не должен писать в базу, пока миграция в этом еще идет.
+    with _schema_lock:
+        # Файл могли удалить и создать заново (тесты, ручной сброс) - тогда проверяем схему снова.
+        if key in _ready_paths and Path(key).exists() and Path(key).stat().st_size > 0:
+            return
+        init_schema(conn)
+        _ready_paths.add(key)
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -94,7 +174,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
     def add_col(table: str, col: str, decl: str) -> None:
         cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
         if col not in cols:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+            try:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+            except sqlite3.OperationalError as e:
+                # бот и панель стартуют одновременно: колонку мог добавить соседний процесс
+                if "duplicate column" not in str(e):
+                    raise
 
     add_col("items", "date", "TEXT NOT NULL DEFAULT ''")
     add_col("runs", "last_summary_counts", "TEXT")
@@ -108,13 +193,57 @@ def _migrate(conn: sqlite3.Connection) -> None:
     add_col("runs", "warnings", "TEXT NOT NULL DEFAULT ''")
     add_col("runs", "files_info", "TEXT NOT NULL DEFAULT ''")
     add_col("documents", "done_at", "REAL")
+    # биллинг и рефералы
+    add_col("users", "category", "TEXT NOT NULL DEFAULT ''")
+    add_col("users", "balance", "INTEGER NOT NULL DEFAULT 0")
+    add_col("users", "ref_code", "TEXT")
+    add_col("users", "referred_by", "INTEGER")
+    add_col("users", "payout_details", "TEXT NOT NULL DEFAULT ''")
+    add_col("users", "email", "TEXT NOT NULL DEFAULT ''")
+    add_col("users", "welcome_given", "INTEGER NOT NULL DEFAULT 0")
+    add_col("documents", "charged", "INTEGER NOT NULL DEFAULT 0")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS users_ref_code ON users (ref_code)")
+    conn.execute("CREATE INDEX IF NOT EXISTS users_referred_by ON users (referred_by)")
+    # Пользователи, пришедшие до биллинга, тоже получают бесплатные операции, один раз.
+    for row in conn.execute("SELECT id FROM users WHERE welcome_given = 0").fetchall():
+        _grant_welcome(conn, row["id"])
+    if conn.execute("SELECT COUNT(*) FROM tariffs").fetchone()[0] == 0:
+        now = time.time()
+        conn.executemany(
+            "INSERT INTO tariffs (name, ops, price_kop, sort, created_at) VALUES (?, ?, ?, ?, ?)",
+            [(name, ops, price * 100, sort, now) for name, ops, price, sort in DEFAULT_TARIFFS],
+        )
+
+
+# Стартовые тарифы, дальше их меняет админ: название, операций, цена в рублях, порядок.
+DEFAULT_TARIFFS = [
+    ("Старт", 10, 590, 1),
+    ("Стандарт", 30, 1490, 2),
+    ("Бизнес", 100, 3990, 3),
+]
+
+
+def _grant_welcome(conn: sqlite3.Connection, user_id: int) -> None:
+    """Бесплатные операции при регистрации; флаг welcome_given не дает выдать их дважды."""
+    cur = conn.execute(
+        "UPDATE users SET welcome_given = 1, balance = balance + ? WHERE id = ? AND welcome_given = 0",
+        (config.FREE_OPS, user_id),
+    )
+    if cur.rowcount != 1 or config.FREE_OPS <= 0:
+        return
+    balance = conn.execute("SELECT balance FROM users WHERE id = ?", (user_id,)).fetchone()[0]
+    conn.execute(
+        "INSERT INTO ledger (user_id, delta, kind, note, balance_after, created_at) VALUES (?, ?, 'welcome', ?, ?, ?)",
+        (user_id, config.FREE_OPS, "Бесплатные операции при регистрации", balance, time.time()),
+    )
 
 
 @contextmanager
 def connect(db_path: str | None = None) -> Iterator[sqlite3.Connection]:
-    conn = get_conn(db_path)
+    path = db_path or config.DB_PATH
+    conn = get_conn(path)
     try:
-        init_schema(conn)
+        _ensure_schema(conn, path)
         yield conn
     finally:
         conn.close()
@@ -122,13 +251,20 @@ def connect(db_path: str | None = None) -> Iterator[sqlite3.Connection]:
 
 # --- пользователи -----------------------------------------------------------
 
-def get_or_create_user(conn: sqlite3.Connection, tg_id: int) -> sqlite3.Row:
+def get_or_create_user(conn: sqlite3.Connection, tg_id: int, ref_code: str = "") -> sqlite3.Row:
+    """ref_code - реферальный код пригласившего; учитывается только при первой регистрации."""
     row = conn.execute("SELECT * FROM users WHERE tg_id = ?", (tg_id,)).fetchone()
     if row:
         return row
-    conn.execute(
-        "INSERT INTO users (tg_id, created_at) VALUES (?, ?)", (tg_id, time.time())
+    referrer = None
+    if ref_code:
+        referrer = conn.execute("SELECT id FROM users WHERE ref_code = ?", (ref_code,)).fetchone()
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO users (tg_id, created_at, referred_by) VALUES (?, ?, ?)",
+        (tg_id, time.time(), referrer["id"] if referrer else None),
     )
+    if cur.rowcount == 1:
+        _grant_welcome(conn, cur.lastrowid)
     conn.commit()
     return conn.execute("SELECT * FROM users WHERE tg_id = ?", (tg_id,)).fetchone()
 

@@ -22,8 +22,10 @@ from chzkiz import chz_mock  # noqa: E402
 def _isolated_state():
     chz_mock.reset_state()
     db_path = Path(os.environ["CHZ_KIZ_DB"])
-    if db_path.exists():
-        db_path.unlink()
+    # В WAL рядом с базой лежат -wal и -shm: чужой -wal от старой базы испортил бы новую.
+    for p in (db_path, Path(f"{db_path}-wal"), Path(f"{db_path}-shm")):
+        if p.exists():
+            p.unlink()
     yield
     chz_mock.reset_state()
 
