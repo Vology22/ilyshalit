@@ -4,23 +4,38 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Сверка КИЗ</title>
-<link rel="stylesheet" href="/static/style.css?v=1011c">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/static/style.css?v=2210a">
 </head>
 <body>
 {% set path = request.url.path if request else "" %}
-<header class="topbar"><div class="topbar-in"><a class="brand" href="/step1">Сверка, вывод и возврат КИЗ</a><nav class="topnav"><a href="/step1"{% if path.startswith("/step") %} class="on"{% endif %}>Сверка</a><a href="/instrukciya"{% if path == "/instrukciya" %} class="on"{% endif %}>Инструкция</a></nav></div></header>
+<header class="topbar"><div class="topbar-in">
+  <a class="brand" href="/step1">
+    <span class="logo" aria-hidden="true"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16"/><path d="m8.5 12.2 2.4 2.4 4.6-5"/></svg></span>
+    <span class="brand-txt"><b>Сверка КИЗ</b><span>вывод и возврат</span></span>
+  </a>
+  <nav class="topnav"><a href="/step1"{% if path.startswith("/step") %} class="on"{% endif %}>Сверка</a><a href="/instrukciya"{% if path == "/instrukciya" %} class="on"{% endif %}>Инструкция</a></nav>
+</div></header>
 <main class="wrap">
 {% if step %}
+<div class="stepbar">
 <ol class="steps">
   {% for n, name in [(1, "Загрузка"), (2, "Вход в ЧЗ"), (3, "Сверка"), (4, "Документы")] %}
   <li class="{{ 'cur' if n == step else ('done' if n < step else '') }}"><span class="num">{{ n }}</span><span class="txt">{{ name }}</span></li>
   {% endfor %}
 </ol>
 <p class="restart"><a href="/step1">Начать заново</a></p>
+</div>
 {% endif %}
 <div class="card">
 {% block content %}{% endblock %}
 </div>
 </main>
+<footer class="foot"><div class="foot-in">
+  <span>Сверка КИЗ Wildberries FBS</span>
+  <a href="/instrukciya">Инструкция</a>
+</div></footer>
 </body>
 </html>

@@ -3,18 +3,26 @@
 {% block content %}
 <h1>Шаг 1. Откуда брать продажи</h1>
 <form method="post" action="/step1" enctype="multipart/form-data" id="step1-form">
-  <label class="radio">
-    <input type="radio" name="source" value="api" checked onclick="toggleSource()"> Через API WB
-  </label>
-  <label class="radio">
-    <input type="radio" name="source" value="excel" onclick="toggleSource()"> Через файл Excel
-  </label>
+  <div class="seg">
+    <label class="radio">
+      <input type="radio" name="source" value="api" checked onclick="toggleSource()"> Через API WB
+    </label>
+    <label class="radio">
+      <input type="radio" name="source" value="excel" onclick="toggleSource()"> Через файл Excel
+    </label>
+  </div>
 
   <div id="api-block" class="block">
-    <label>Склад: <input type="radio" name="wh" checked disabled> FBS
-      <input type="radio" name="wh" disabled> FBO (пока не поддержан)</label>
-    <label>Период с <input type="date" name="date_from" value="{{ date_from }}"></label>
-    <label>по <input type="date" name="date_to" value="{{ date_to }}"></label>
+    <div class="field-label">Склад</div>
+    <div class="seg">
+      <label class="radio"><input type="radio" name="wh" checked disabled> FBS</label>
+      <label class="radio"><input type="radio" name="wh" disabled> FBO (пока не поддержан)</label>
+    </div>
+    <div class="field-label">Период сверки</div>
+    <div class="period">
+      <label>с <input type="date" name="date_from" value="{{ date_from }}"></label>
+      <label>по <input type="date" name="date_to" value="{{ date_to }}"></label>
+    </div>
     <div>
       <button type="button" class="tab" data-end="{{ date_to }}" data-days="30" onclick="setPeriod(this)">Последний месяц</button>
       <button type="button" class="tab" data-end="{{ date_to }}" data-days="92" onclick="setPeriod(this)">Три месяца</button>
