@@ -10,6 +10,7 @@ import re
 import httpx
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject, CommandStart
@@ -423,7 +424,8 @@ async def _remind_loop(bot: Bot) -> None:
 
 async def main() -> None:
     config.check_mode()
-    bot = Bot(token=config.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    session = AiohttpSession(proxy=config.TG_PROXY) if config.TG_PROXY else None
+    bot = Bot(token=config.BOT_TOKEN, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = build_dispatcher()
     await setup_bot(bot)
     await admin.sync_staff_commands(bot)

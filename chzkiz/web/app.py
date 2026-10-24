@@ -1495,7 +1495,7 @@ async def _finalize_run(run_id: str, user_id: int) -> None:
             f"Отчет: {config.PUBLIC_URL}/report/{run_id}"
         )
         try:
-            async with httpx.AsyncClient(timeout=10.0) as http_client:
+            async with httpx.AsyncClient(timeout=10.0, proxy=config.TG_PROXY or None) as http_client:
                 await http_client.post(
                     f"https://api.telegram.org/bot{config.BOT_TOKEN}/sendMessage",
                     json={"chat_id": user["tg_id"], "text": text},

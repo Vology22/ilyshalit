@@ -7,6 +7,8 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+# Прокси до api.telegram.org, например socks5://user:pass@host:port. Пусто: напрямую.
+TG_PROXY = os.environ.get("TG_PROXY", "").strip()
 FERNET_KEY = os.environ.get("FERNET_KEY", "")
 # Только для ручной проверки реального API WB стороной разработчика, в сценарий пользователя не идет.
 WB_DEMO_TOKEN = os.environ.get("WB_DEMO_TOKEN", "")
